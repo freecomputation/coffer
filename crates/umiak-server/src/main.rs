@@ -205,7 +205,7 @@ fn shelf_page(shelf: &Shelf) -> String {
     let mut items = String::new();
     for b in &shelf.books {
         items.push_str(&format!(
-            "<p class=\"item\"><a href=\"/book/{}\">{}</a> <span class=\"meta\">{} articles, {}</span></p>\n",
+            "<p class=\"item\">- <a href=\"/book/{}\">{}</a> <span class=\"meta\">{} articles, {}</span></p>\n",
             b.id,
             esc(&b.title),
             b.article_count,
@@ -278,7 +278,7 @@ fn search_page(shelf: &Shelf, query: &str) -> String {
                 .map(|b| b.title.as_str())
                 .unwrap_or_default();
             body.push_str(&format!(
-                "<p class=\"item\"><a href=\"/book/{}/{}\">{}</a> <span class=\"meta\">in {}</span></p>\n",
+                "<p class=\"item\">- <a href=\"/book/{}/{}\">{}</a> <span class=\"meta\">in {}</span></p>\n",
                 h.book,
                 h.path,
                 esc(if h.title.is_empty() { &h.path } else { &h.title }),
@@ -570,7 +570,7 @@ fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String 
                             )
                         };
                         out.push_str(&format!(
-                            "<p class=\"item\"><strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</p>\n",
+                            "<p class=\"item\">- <strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</p>\n",
                             esc(&e.title),
                             esc(&e.summary),
                             meta,
