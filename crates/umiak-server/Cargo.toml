@@ -1,0 +1,10 @@
+[package]
+name = "umiak-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Loopback HTTP server for the Shelf. Every Umiak surface talks to this."
+
+[dependencies]
+umiak-core = { path = "../umiak-core" }
+tiny_http = "0.12"
