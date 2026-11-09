@@ -5,3 +5,6 @@
 /third-party/*.deb
 /third-party/libzim-dev/
 *.zim
+
+app/src-tauri/gen/
+app/src-tauri/icons/*.png

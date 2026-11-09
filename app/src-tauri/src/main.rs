@@ -13,6 +13,8 @@
 use std::process::{Child, Command};
 use std::sync::Mutex;
 
+use tauri::Manager;
+
 struct ServerChild(Mutex<Option<Child>>);
 
 fn spawn_server() -> Option<Child> {
