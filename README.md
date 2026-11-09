@@ -100,6 +100,18 @@ the book. Offline the catalogs simply say so, and nothing else
 changes. The fetch honors the standard proxy environment variables
 when they are set.
 
+Maps ride on the Shelf too. A PMTiles archive - one file holding a
+whole map pyramid, the format Protomaps publishes from city extracts
+to the planet file - goes in the shelf directory beside the books,
+and the Maps page lists what is aboard with its zooms and bounds.
+Raster archives open in a built-in viewer: a tile grid with zoom and
+pan links, no scripts and no tile server, everything read out of the
+one file on disk. Vector archives are served tile by tile at
+/map/<file>/tile/Z/X/Y for readers that speak vector tiles. The
+reader is our own, in the server: header, directories, and the
+archive's Hilbert-curve tile ids, checked against a real archive
+whose directory it reproduces exactly.
+
 ## Design
 
 See DESIGN.md for the determinations this code answers to.

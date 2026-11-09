@@ -26,6 +26,7 @@ use tiny_http::{Header, Response, Server};
 use umiak_core::Shelf;
 
 mod epub;
+mod pmtiles;
 use epub::EpubBook;
 
 fn esc(s: &str) -> String {
@@ -149,6 +150,7 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#fff;
 <button id="markbtn" title="Bookmark this page">&#9734;</button>
 <button id="marksbtn">Marks</button>
 <button id="histbtn">History</button>
+<button id="mapsbtn">Maps</button>
 </div>
 <div id="tabs"></div>
 <iframe id="view" src="/shelf"></iframe>
@@ -207,6 +209,7 @@ document.getElementById('fwd').onclick=function(){ view.contentWindow.history.fo
 document.getElementById('reload').onclick=function(){ try{ view.contentWindow.location.reload(); }catch(e){ view.src=current(); } };
 document.getElementById('shelfbtn').onclick=function(){ go('/shelf'); };
 document.getElementById('catbtn').onclick=function(){ go('/catalog'); };
+document.getElementById('mapsbtn').onclick=function(){ go('/maps'); };
 document.getElementById('markbtn').onclick=function(){
   var u=current();
   fetch('/api/bookmark?url=' + encodeURIComponent(u) + '&title=' + encodeURIComponent(tabs[active].title || u)).then(function(r){ return r.json(); }).then(function(j){
@@ -1550,6 +1553,7 @@ struct AppState {
     data: RwLock<BrowserData>,
     shelf: RwLock<Arc<Shelf>>,
     epubs: RwLock<Arc<Vec<EpubBook>>>,
+    maps: RwLock<Arc<Vec<MapItem>>>,
     downloads: RwLock<Vec<Download>>,
     cats: RwLock<Option<(std::time::Instant, Vec<String>)>>,
     agent: ureq::Agent,
@@ -1638,12 +1642,222 @@ impl AppState {
         let _ = std::fs::write(self.dir.join("umiak-data.json"), text);
     }
 
+    fn maps(&self) -> Arc<Vec<MapItem>> {
+        self.maps.read().unwrap().clone()
+    }
+
     fn reload(&self) {
         let fresh = Arc::new(Shelf::open_dir(&self.dir));
         *self.shelf.write().unwrap() = fresh;
         let fresh_epubs = Arc::new(epub::scan_epubs(&self.dir));
         *self.epubs.write().unwrap() = fresh_epubs;
+        let fresh_maps = Arc::new(scan_maps(&self.dir));
+        *self.maps.write().unwrap() = fresh_maps;
     }
+}
+
+
+pub struct MapItem {
+    file_name: String,
+    archive: pmtiles::Archive,
+}
+
+pub fn scan_maps(dir: &PathBuf) -> Vec<MapItem> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .map(|e| e.eq_ignore_ascii_case("pmtiles"))
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        match pmtiles::Archive::open(&path) {
+            Ok(archive) => out.push(MapItem {
+                file_name: path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                archive,
+            }),
+            Err(e) => eprintln!("umiak-server: skipping {}: {e}", path.display()),
+        }
+    }
+    out
+}
+
+fn maps_page(maps: &[MapItem]) -> String {
+    let mut body = String::from(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Maps</title></head>\n<body><h1>Maps</h1>\n",
+    );
+    if maps.is_empty() {
+        body.push_str("<p>No map archives aboard yet. A map archive is a single .pmtiles file - Protomaps publishes them, from a city extract to the whole planet - and it goes in the shelf directory beside the books.</p>\n");
+    }
+    for m in maps {
+        let h = &m.archive.header;
+        body.push_str(&format!(
+            "<p class=\"item\">- <a href=\"/map/{}/\">{}</a> <span class=\"meta\">{} - zooms {} to {} - {} tile entries - bounds {:.2}, {:.2} to {:.2}, {:.2}</span></p>\n",
+            url_encode(&m.file_name),
+            esc(&m.file_name),
+            h.tile_type.label(),
+            h.min_zoom,
+            h.max_zoom,
+            h.num_entries,
+            h.min_lon,
+            h.min_lat,
+            h.max_lon,
+            h.max_lat
+        ));
+    }
+    body.push_str("<p><a href=\"/shelf\">Shelf</a></p></body></html>");
+    body
+}
+
+fn lon_to_tilex(lon: f64, z: u8) -> f64 {
+    (lon + 180.0) / 360.0 * (1u64 << z) as f64
+}
+
+fn lat_to_tiley(lat: f64, z: u8) -> f64 {
+    let lat = lat.clamp(-85.0511, 85.0511).to_radians();
+    (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * (1u64 << z) as f64
+}
+
+fn tilex_to_lon(x: f64, z: u8) -> f64 {
+    x / (1u64 << z) as f64 * 360.0 - 180.0
+}
+
+fn tiley_to_lat(y: f64, z: u8) -> f64 {
+    let n = std::f64::consts::PI * (1.0 - 2.0 * y / (1u64 << z) as f64);
+    (n.sinh().atan()).to_degrees()
+}
+
+fn map_viewer_page(item: &MapItem, z: u8, lon: f64, lat: f64) -> String {
+    let h = &item.archive.header;
+    let file = url_encode(&item.file_name);
+    let mut body = format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>{}</title></head>\n<body><h1>{}</h1>\n",
+        esc(&item.file_name),
+        esc(&item.file_name)
+    );
+    if h.tile_type != pmtiles::TileType::Png
+        && h.tile_type != pmtiles::TileType::Jpg
+        && h.tile_type != pmtiles::TileType::Webp
+    {
+        body.push_str(&format!(
+            "<p>This archive holds {} tiles. Tiles are served at /map/{}/tile/Z/X/Y for any reader that speaks vector tiles; the picture viewer in this build renders raster archives.</p>\n",
+            h.tile_type.label(),
+            file
+        ));
+        body.push_str("<p><a href=\"/maps\">Maps</a></p></body></html>");
+        return body;
+    }
+    let cx = lon_to_tilex(lon, z);
+    let cy = lat_to_tiley(lat, z);
+    let (cxi, cyi) = (cx.floor() as i64, cy.floor() as i64);
+    let n = 1i64 << z;
+    let link = |z: u8, lon: f64, lat: f64| {
+        format!("/map/{}/?z={}&lon={:.5}&lat={:.5}", file, z, lon, lat)
+    };
+    body.push_str("<p>");
+    if z < h.max_zoom {
+        body.push_str(&format!("<a href=\"{}\">Zoom in</a> ", link(z + 1, lon, lat)));
+    }
+    if z > h.min_zoom {
+        body.push_str(&format!("<a href=\"{}\">Zoom out</a> ", link(z - 1, lon, lat)));
+    }
+    let step_lon = tilex_to_lon(cx + 1.0, z) - tilex_to_lon(cx, z);
+    let step_lat = tiley_to_lat(cy, z) - tiley_to_lat(cy + 1.0, z);
+    body.push_str(&format!(
+        "<a href=\"{}\">North</a> <a href=\"{}\">South</a> <a href=\"{}\">West</a> <a href=\"{}\">East</a></p>\n",
+        link(z, lon, lat + step_lat),
+        link(z, lon, lat - step_lat),
+        link(z, lon - step_lon, lat),
+        link(z, lon + step_lon, lat)
+    ));
+    body.push_str("<table cellspacing=\"0\" cellpadding=\"0\">");
+    for dy in -1i64..=1 {
+        body.push_str("<tr>");
+        for dx in -1i64..=1 {
+            let (tx, ty) = (cxi + dx, cyi + dy);
+            if tx < 0 || ty < 0 || tx >= n || ty >= n {
+                body.push_str("<td width=\"256\" height=\"256\"></td>");
+            } else {
+                body.push_str(&format!(
+                    "<td><img width=\"256\" height=\"256\" src=\"/map/{}/tile/{}/{}/{}\"></td>",
+                    file, z, tx, ty
+                ));
+            }
+        }
+        body.push_str("</tr>");
+    }
+    body.push_str("</table>\n");
+    if let Some(meta) = item.archive.metadata() {
+        if let Some(att) = meta.get("attribution").and_then(|a| a.as_str()) {
+            body.push_str(&format!("<p>{}</p>\n", att));
+        }
+    }
+    body.push_str("<p><a href=\"/maps\">Maps</a></p></body></html>");
+    body
+}
+
+fn map_route(state: &AppState, rest: &str, url: &str) -> Response<Cursor<Vec<u8>>> {
+    let (file_part, inner) = match rest.split_once('/') {
+        Some((a, b)) => (a, b.to_string()),
+        None => (rest, String::new()),
+    };
+    let file_name = url_decode(file_part);
+    let maps = state.maps();
+    let item = match maps.iter().find(|m| m.file_name == file_name) {
+        Some(m) => m,
+        None => return Response::from_string("no such map archive\n").with_status_code(404),
+    };
+    if let Some(tile_path) = inner.strip_prefix("tile/") {
+        let parts: Vec<&str> = tile_path.split('/').collect();
+        if parts.len() == 3 {
+            let parsed = (
+                parts[0].parse::<u8>(),
+                parts[1].parse::<u64>(),
+                parts[2].parse::<u64>(),
+            );
+            if let (Ok(z), Ok(x), Ok(y)) = parsed {
+                return match item.archive.tile(z, x, y) {
+                    Ok(Some(bytes)) => {
+                        let header = tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            item.archive.header.tile_type.content_type().as_bytes(),
+                        )
+                        .unwrap();
+                        Response::from_data(bytes).with_header(header)
+                    }
+                    Ok(None) => {
+                        Response::from_string("no tile there\n").with_status_code(404)
+                    }
+                    Err(e) => Response::from_string(format!("tile failed: {e}\n"))
+                        .with_status_code(500),
+                };
+            }
+        }
+        return Response::from_string("bad tile path\n").with_status_code(400);
+    }
+    let h = &item.archive.header;
+    let z = query_param(url, "z")
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(h.center_zoom)
+        .clamp(h.min_zoom, h.max_zoom);
+    let lon = query_param(url, "lon")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(h.center_lon);
+    let lat = query_param(url, "lat")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(h.center_lat);
+    html_response(map_viewer_page(item, z, lon, lat))
 }
 
 fn epub_route(state: &AppState, rest: &str) -> Response<Cursor<Vec<u8>>> {
@@ -1695,6 +1909,10 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
         html_response(CHROME.to_string())
     } else if path == "/shelf" {
         html_response(shelf_page(&shelf, &state.epubs()))
+    } else if path == "/maps" {
+        html_response(maps_page(&state.maps()))
+    } else if let Some(rest) = path.strip_prefix("/map/") {
+        map_route(&state, rest, &url)
     } else if path == "/favicon.ico" {
         Response::from_data(Vec::new()).with_status_code(204)
     } else if path == "/api/books" {
@@ -1849,6 +2067,7 @@ fn main() {
         direct_agent: direct_builder.build(),
         data: RwLock::new(load_data(&dir)),
         epubs: RwLock::new(Arc::new(epub::scan_epubs(&dir))),
+        maps: RwLock::new(Arc::new(scan_maps(&dir))),
         shelf: RwLock::new(Arc::new(Shelf::open_dir(&dir))),
         downloads: RwLock::new(Vec::new()),
         cats: RwLock::new(None),
