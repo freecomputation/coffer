@@ -76,16 +76,29 @@ app, and run the app from a directory holding your shelf folder.
 
 The window is plain chrome: back, forward, reload, an address field
 (a search, or a path like /book/0), and tabs, which are saved states
-over one view. Everything is served by the local server, so the same
-surfaces work in any browser pointed at the loopback address.
+over one view. The star keeps a bookmark, and Marks and History sit
+beside it; both live in a plain JSON file in the shelf directory, the
+reader's own record on the reader's own disk. Everything is served by
+the local server, so the same surfaces work in any browser pointed at
+the loopback address.
 
 The Shelf is the library: every ZIM in the shelf directory, searchable
-as one collection. The catalog reads the Kiwix OPDS feed when a
-connection exists, organized by category and by publisher, and shelves
-what you pick; a progress page shows the book coming down, and reading
-keeps working while it does. Offline the catalog simply says so, and
-nothing else changes. The fetch honors the standard proxy environment
-variables when they are set.
+as one collection, and every EPUB too - an EPUB opens at a contents
+page built from its own navigation, its chapters and images served
+from inside the book, and its text joins the shelf search. The catalog
+reads the Kiwix OPDS feed when a connection exists, organized by
+category and by publisher, and shelves what you pick; a progress page
+shows the book coming down, and reading keeps working while it does.
+Four more catalogs sit beside Kiwix in the source bar - Project
+Gutenberg, Unglue.it, and Open Library for EPUB books, SermonIndex for
+ZIMs - each entry naming a file the Shelf takes directly. Downloads
+run several at a time, each with its own progress, and a fetch that
+stops leaves its partial file on the shelf directory: fetch the same
+book again and it resumes from those bytes when the source honors
+range requests, so a connection that comes and goes still finishes
+the book. Offline the catalogs simply say so, and nothing else
+changes. The fetch honors the standard proxy environment variables
+when they are set.
 
 ## Design
 

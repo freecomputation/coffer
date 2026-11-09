@@ -25,6 +25,9 @@ use std::sync::{Arc, RwLock};
 use tiny_http::{Header, Response, Server};
 use umiak_core::Shelf;
 
+mod epub;
+use epub::EpubBook;
+
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -143,6 +146,9 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#fff;
 <button id="go">Go</button>
 <button id="shelfbtn">Shelf</button>
 <button id="catbtn">Catalog</button>
+<button id="markbtn" title="Bookmark this page">&#9734;</button>
+<button id="marksbtn">Marks</button>
+<button id="histbtn">History</button>
 </div>
 <div id="tabs"></div>
 <iframe id="view" src="/shelf"></iframe>
@@ -182,6 +188,10 @@ view.addEventListener('load', function(){
   var u=current(); tabs[active].url=u; addr.value=u;
   try { tabs[active].title=view.contentDocument.title||u; } catch(e){}
   renderTabs();
+  fetch('/api/history?url=' + encodeURIComponent(u) + '&title=' + encodeURIComponent(tabs[active].title || u)).catch(function(){});
+  fetch('/api/bookmark-check?url=' + encodeURIComponent(u)).then(function(r){ return r.json(); }).then(function(j){
+    document.getElementById('markbtn').innerHTML = j.bookmarked ? '&#9733;' : '&#9734;';
+  }).catch(function(){});
 });
 function submitAddr(){
   var v=addr.value.trim(); if(!v) return;
@@ -197,11 +207,19 @@ document.getElementById('fwd').onclick=function(){ view.contentWindow.history.fo
 document.getElementById('reload').onclick=function(){ try{ view.contentWindow.location.reload(); }catch(e){ view.src=current(); } };
 document.getElementById('shelfbtn').onclick=function(){ go('/shelf'); };
 document.getElementById('catbtn').onclick=function(){ go('/catalog'); };
+document.getElementById('markbtn').onclick=function(){
+  var u=current();
+  fetch('/api/bookmark?url=' + encodeURIComponent(u) + '&title=' + encodeURIComponent(tabs[active].title || u)).then(function(r){ return r.json(); }).then(function(j){
+    document.getElementById('markbtn').innerHTML = j.bookmarked ? '&#9733;' : '&#9734;';
+  }).catch(function(){});
+};
+document.getElementById('marksbtn').onclick=function(){ go('/bookmarks'); };
+document.getElementById('histbtn').onclick=function(){ go('/history'); };
 renderTabs();
 </script>
 </body></html>"##;
 
-fn shelf_page(shelf: &Shelf) -> String {
+fn shelf_page(shelf: &Shelf, epubs: &[EpubBook]) -> String {
     let mut items = String::new();
     for b in &shelf.books {
         items.push_str(&format!(
@@ -212,8 +230,20 @@ fn shelf_page(shelf: &Shelf) -> String {
             esc(&b.file_name)
         ));
     }
-    if shelf.books.is_empty() {
-        items = "<p>No books aboard yet. Add .zim files to the shelf directory, or fetch some from the <a href=\"/catalog\">catalog</a>.</p>".to_string();
+    if shelf.books.is_empty() && epubs.is_empty() {
+        items = "<p>No books aboard yet. Add .zim or .epub files to the shelf directory, or fetch some from the <a href=\"/catalog\">catalog</a>.</p>".to_string();
+    }
+    if !epubs.is_empty() {
+        items.push_str("<h2>Books (EPUB)</h2>\n");
+        for e in epubs {
+            items.push_str(&format!(
+                "<p class=\"item\">- <a href=\"/epub/{}/\">{}</a> <span class=\"meta\">{} chapters, {}</span></p>\n",
+                url_encode(&e.file_name),
+                esc(&e.title),
+                e.chapters.len(),
+                esc(&e.file_name)
+            ));
+        }
     }
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Shelf</title></head>\n\
@@ -265,10 +295,16 @@ fn federated_search(shelf: &Shelf, query: &str) -> Vec<Hit> {
     hits
 }
 
-fn search_page(shelf: &Shelf, query: &str) -> String {
+fn search_page(shelf: &Shelf, epubs: &[EpubBook], query: &str) -> String {
     let hits = federated_search(shelf, query);
+    let mut epub_hits: Vec<(&EpubBook, String, String)> = Vec::new();
+    for e in epubs {
+        for (path, label) in e.search(query) {
+            epub_hits.push((e, path, label));
+        }
+    }
     let mut body = String::new();
-    if hits.is_empty() {
+    if hits.is_empty() && epub_hits.is_empty() {
         body = "<p>Nothing aboard matches that.</p>".to_string();
     } else {
         body.push_str("");
@@ -286,6 +322,15 @@ fn search_page(shelf: &Shelf, query: &str) -> String {
             ));
         }
         body.push_str("");
+        for (e, path, label) in &epub_hits {
+            body.push_str(&format!(
+                "<p class=\"item\">- <a href=\"/epub/{}/x/{}\">{}</a> <span class=\"meta\">in {} (EPUB)</span></p>\n",
+                url_encode(&e.file_name),
+                path,
+                esc(label),
+                esc(&e.title)
+            ));
+        }
     }
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Search</title></head>\n\
@@ -459,8 +504,7 @@ fn categories(state: &AppState) -> Vec<String> {
             }
         }
     }
-    let fetched = state
-        .agent
+    let fetched = agent_for(state, "https://library.kiwix.org/catalog/v2/categories")
         .get("https://library.kiwix.org/catalog/v2/categories")
         .call()
         .and_then(|r| r.into_string().map_err(ureq::Error::from));
@@ -480,7 +524,10 @@ fn categories(state: &AppState) -> Vec<String> {
     }
 }
 
-fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String {
+fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str, src: &str) -> String {
+    if src != "kiwix" {
+        return feed_catalog_page(state, src, query);
+    }
     let lang = if lang.is_empty() { "eng" } else { lang };
     let form = format!(
         "<form action=\"/catalog\" method=\"get\">\
@@ -526,8 +573,7 @@ fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String 
         url.push_str(&format!("&category={}", url_encode(cat)));
     }
 
-    let fetched = state
-        .agent
+    let fetched = agent_for(state, &url)
         .get(&url)
         .call()
         .and_then(|r| r.into_string().map_err(ureq::Error::from));
@@ -590,15 +636,476 @@ fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String 
     };
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Catalog</title></head>\n\
-         <body><h1>Catalog</h1>\n{}\n{}\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
-        form, catbar, body
+         <body><h1>Catalog</h1>\n{}\n{}\n{}\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
+        form,
+        srcbar("kiwix", lang),
+        catbar,
+        body
     )
 }
 
 // ---------------------------------------------------------------------
-// Fetching a book: the download runs on its own thread and reports its
-// state here, so the progress page (and anything else) can watch it
-// come down. One fetch at a time; the Shelf keeps serving throughout.
+// Other catalogs: book feeds beyond Kiwix. Gutenberg, Unglue.it, and
+// SermonIndex speak OPDS 1.x (Atom); Open Library speaks OPDS 2.0
+// (JSON). Each entry names a file the Shelf can take directly: an EPUB
+// or a ZIM. Kiwix stays the stocking catalog; these are side doors.
+
+const SOURCES: [(&str, &str); 5] = [
+    ("kiwix", "Kiwix"),
+    ("gutenberg", "Gutenberg"),
+    ("unglue", "Unglue.it"),
+    ("sermon", "SermonIndex"),
+    ("openlibrary", "Open Library"),
+];
+
+fn srcbar(current: &str, lang: &str) -> String {
+    let mut out = String::from("<p class=\"cats\">Sources: ");
+    for (i, (key, label)) in SOURCES.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" | ");
+        }
+        if *key == current {
+            out.push_str(&format!("<strong>{}</strong>", label));
+        } else if *key == "kiwix" {
+            out.push_str(&format!(
+                "<a href=\"/catalog?lang={}\">{}</a>",
+                url_encode(lang),
+                label
+            ));
+        } else {
+            out.push_str(&format!(
+                "<a href=\"/catalog?src={}\">{}</a>",
+                key, label
+            ));
+        }
+    }
+    out.push_str("</p>");
+    out
+}
+
+struct FeedEntry {
+    title: String,
+    author: String,
+    summary: String,
+    href: String,
+    file_name: String,
+    kind: String,
+}
+
+fn feed_file_name(href: &str, kind: &str, title: &str) -> String {
+    let clean = href.split('?').next().unwrap_or(href);
+    let clean = clean.strip_suffix(".meta4").unwrap_or(clean);
+    let mut name = clean
+        .rsplit('/')
+        .next()
+        .unwrap_or("book")
+        .to_string();
+    if kind == "epub" {
+        if let Some(i) = name.find(".epub") {
+            name.truncate(i + 5);
+        } else {
+            // Some sources serve EPUBs from download endpoints with no
+            // file name in the address; name the book from its title.
+            let slug: String = title
+                .chars()
+                .take(40)
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string();
+            name = format!("{}-epub.epub", if slug.is_empty() { "book" } else { &slug });
+        }
+    }
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn abs_url(base: &str, href: &str) -> String {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        return href.to_string();
+    }
+    let origin = match base.find("://") {
+        Some(i) => {
+            let rest = &base[i + 3..];
+            let end = rest.find('/').map(|e| i + 3 + e).unwrap_or(base.len());
+            &base[..end]
+        }
+        None => base,
+    };
+    if let Some(stripped) = href.strip_prefix('/') {
+        format!("{}/{}", origin, stripped)
+    } else {
+        let dir = base.rsplit_once('/').map(|(d, _)| d).unwrap_or(base);
+        format!("{}/{}", dir, href)
+    }
+}
+
+fn parse_feed_opds(xml: &str) -> Vec<FeedEntry> {
+    let mut out = Vec::new();
+    for block in xml.split("<entry>").skip(1) {
+        let block = block.split("</entry>").next().unwrap_or("");
+        let title = xml_tag(block, "title");
+        if title.is_empty() {
+            continue;
+        }
+        let author = match block.find("<author>") {
+            Some(a) => xml_tag(&block[a..], "name"),
+            None => String::new(),
+        };
+        let mut summary = xml_tag(block, "summary");
+        if summary.is_empty() {
+            summary = xml_tag(block, "content");
+        }
+        if summary.contains('<') {
+            summary = String::new();
+        }
+        let mut epub_hrefs: Vec<String> = Vec::new();
+        let mut zim_href: Option<String> = None;
+        let mut page_href: Option<String> = None;
+        for (idx, _) in block.match_indices("<link") {
+            let rest = &block[idx..];
+            let end = rest.find('>').unwrap_or(rest.len());
+            let tag = &rest[..end];
+            let rel = xml_attr(tag, "rel");
+            let typ = xml_attr(tag, "type");
+            let href = xml_attr(tag, "href");
+            if href.is_empty() {
+                continue;
+            }
+            if rel.contains("subsection") && href.ends_with(".opds") {
+                if page_href.is_none() {
+                    page_href = Some(href);
+                }
+                continue;
+            }
+            if !rel.contains("acquisition") && !rel.is_empty() {
+                continue;
+            }
+            if typ.contains("epub") || href.contains(".epub") {
+                epub_hrefs.push(href);
+            } else if href.ends_with(".zim") || href.ends_with(".zim.meta4") {
+                if zim_href.is_none() {
+                    zim_href = Some(href);
+                }
+            }
+        }
+        let epub_href = epub_hrefs
+            .iter()
+            .find(|h| h.contains("noimages"))
+            .cloned()
+            .or_else(|| epub_hrefs.into_iter().next());
+        let (href, kind) = match (epub_href, zim_href) {
+            (Some(h), _) => (h, "epub"),
+            (None, Some(h)) => (h, "zim"),
+            (None, None) => match page_href {
+                Some(ph) => (ph, "page"),
+                None => continue,
+            },
+        };
+        if kind == "page" {
+            out.push(FeedEntry {
+                title,
+                author,
+                summary,
+                href,
+                file_name: String::new(),
+                kind: kind.to_string(),
+            });
+            continue;
+        }
+        let href = href
+            .strip_suffix(".meta4")
+            .map(|h| h.to_string())
+            .unwrap_or(href);
+        let file_name = feed_file_name(&href, kind, &title);
+        if !file_name.ends_with(".epub") && !file_name.ends_with(".zim") {
+            continue;
+        }
+        out.push(FeedEntry {
+            title,
+            author,
+            summary,
+            href,
+            file_name,
+            kind: kind.to_string(),
+        });
+    }
+    out
+}
+
+fn parse_opds2(text: &str) -> Vec<FeedEntry> {
+    let mut out = Vec::new();
+    let v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return out,
+    };
+    let mut pubs: Vec<&serde_json::Value> = Vec::new();
+    if let Some(arr) = v.get("publications").and_then(|p| p.as_array()) {
+        pubs.extend(arr.iter());
+    }
+    if let Some(groups) = v.get("groups").and_then(|g| g.as_array()) {
+        for g in groups {
+            if let Some(arr) = g.get("publications").and_then(|p| p.as_array()) {
+                pubs.extend(arr.iter());
+            }
+        }
+    }
+    for pub_ in pubs {
+        let meta = &pub_["metadata"];
+        let title = meta
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let author = match meta.get("author") {
+            Some(serde_json::Value::String(a)) => a.clone(),
+            Some(serde_json::Value::Object(o)) => o
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Some(serde_json::Value::Array(a)) => a
+                .first()
+                .and_then(|f| {
+                    f.as_str().map(|s| s.to_string()).or_else(|| {
+                        f.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())
+                    })
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let summary = meta
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut epub_href: Option<String> = None;
+        let mut web_href: Option<String> = None;
+        if let Some(links) = pub_.get("links").and_then(|l| l.as_array()) {
+            for l in links {
+                let typ = l.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let rel = l.get("rel").and_then(|t| t.as_str()).unwrap_or("");
+                let href = l.get("href").and_then(|h| h.as_str()).unwrap_or("");
+                if href.is_empty() {
+                    continue;
+                }
+                if typ.contains("epub") && epub_href.is_none() {
+                    epub_href = Some(href.to_string());
+                }
+                if typ.contains("text/html") && rel.contains("alternate") && web_href.is_none() {
+                    web_href = Some(href.to_string());
+                }
+            }
+        }
+        if let Some(h) = epub_href {
+            let file_name = feed_file_name(&h, "epub", &title);
+            if file_name.ends_with(".epub") {
+                out.push(FeedEntry {
+                    title,
+                    author,
+                    summary,
+                    href: h,
+                    file_name,
+                    kind: "epub".to_string(),
+                });
+                continue;
+            }
+        }
+        if let Some(h) = web_href {
+            out.push(FeedEntry {
+                title,
+                author,
+                summary,
+                href: h,
+                file_name: String::new(),
+                kind: "web".to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn feed_catalog_page(state: &AppState, src: &str, query: &str) -> String {
+    let (label, url) = match src {
+        "gutenberg" => (
+            "Project Gutenberg",
+            format!(
+                "https://www.gutenberg.org/ebooks/search.opds/?query={}",
+                url_encode(query)
+            ),
+        ),
+        "unglue" => (
+            "Unglue.it",
+            "https://unglue.it/api/opds/all/".to_string(),
+        ),
+        "sermon" => (
+            "SermonIndex",
+            "https://api.sermonindex.net/kiwix/library.xml".to_string(),
+        ),
+        _ => (
+            "Open Library",
+            if query.is_empty() {
+                "https://openlibrary.org/opds/".to_string()
+            } else {
+                format!(
+                    "https://openlibrary.org/opds/search?query={}",
+                    url_encode(query)
+                )
+            },
+        ),
+    };
+    let form = format!(
+        "<form action=\"/catalog\" method=\"get\">         <input type=\"hidden\" name=\"src\" value=\"{}\">          <input name=\"q\" size=\"32\" value=\"{}\" placeholder=\"Search {}\">          <input type=\"submit\" value=\"Search\"></form>",
+        esc(src),
+        esc(query),
+        label
+    );
+    let fetched = agent_for(state, &url)
+        .get(&url)
+        .call()
+        .and_then(|r| r.into_string().map_err(ureq::Error::from));
+    let body = match fetched {
+        Ok(text) => {
+            let mut entries = if src == "openlibrary" {
+                parse_opds2(&text)
+            } else {
+                parse_feed_opds(&text)
+            };
+            if src == "gutenberg" {
+                // Gutenberg's search feed names book pages, not files:
+                // follow each book page and take the file it offers.
+                let mut resolved: Vec<FeedEntry> = Vec::new();
+                let mut followed = 0;
+                for e in entries.into_iter() {
+                    if e.kind != "page" {
+                        resolved.push(e);
+                        continue;
+                    }
+                    let is_book_page = e
+                        .href
+                        .rsplit_once("/ebooks/")
+                        .map(|(_, tail)| {
+                            tail.ends_with(".opds")
+                                && tail[..tail.len() - 5]
+                                    .chars()
+                                    .all(|c| c.is_ascii_digit())
+                        })
+                        .unwrap_or(false);
+                    if !is_book_page || followed >= 8 {
+                        continue;
+                    }
+                    followed += 1;
+                    let page_url = abs_url("https://www.gutenberg.org/", &e.href);
+                    if let Ok(page) = agent_for(state, &page_url)
+                        .get(&page_url)
+                        .call()
+                        .and_then(|r| r.into_string().map_err(ureq::Error::from))
+                    {
+                        if let Some(mut sub) = parse_feed_opds(&page)
+                            .into_iter()
+                            .find(|x| x.kind == "epub" || x.kind == "zim")
+                        {
+                            if sub.title.is_empty() {
+                                sub.title = e.title.clone();
+                            }
+                            if sub.author.is_empty() {
+                                sub.author = e.author.clone();
+                            }
+                            sub.href = abs_url("https://www.gutenberg.org/", &sub.href);
+                            sub.file_name =
+                                feed_file_name(&sub.href, &sub.kind, &sub.title);
+                            resolved.push(sub);
+                        }
+                    }
+                }
+                entries = resolved;
+            }
+            if (src == "sermon" || src == "unglue") && !query.is_empty() {
+                let q = query.to_lowercase();
+                entries.retain(|e| e.title.to_lowercase().contains(&q));
+            }
+            if entries.is_empty() {
+                "<p>That catalog has nothing by that name.</p>".to_string()
+            } else {
+                let shelf = state.shelf();
+                let epubs = state.epubs();
+                let mut out = String::new();
+                for e in &entries {
+                    if e.kind == "web" {
+                        out.push_str(&format!(
+                            "<p class=\"item\">- <strong>{}</strong> - {}<br><span class=\"meta\">Open Library lends this book</span> <a href=\"{}\">Borrow there</a></p>\n",
+                            esc(&e.title),
+                            esc(&e.summary),
+                            esc(&e.href)
+                        ));
+                        continue;
+                    }
+                    let aboard = shelf.books.iter().any(|b| b.file_name == e.file_name)
+                        || epubs.iter().any(|b| b.file_name == e.file_name);
+                    let meta = if e.author.is_empty() {
+                        format!("{} book", e.kind.to_uppercase())
+                    } else {
+                        format!("{} book, by {}", e.kind.to_uppercase(), esc(&e.author))
+                    };
+                    let action = if aboard {
+                        "<span class=\"meta\">aboard</span>".to_string()
+                    } else {
+                        format!(
+                            "<a href=\"/acquire?url={}&name={}&size=0\">Add to the Shelf</a>",
+                            url_encode(&e.href),
+                            url_encode(&e.file_name)
+                        )
+                    };
+                    out.push_str(&format!(
+                        "<p class=\"item\">- <strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</p>\n",
+                        esc(&e.title),
+                        esc(&e.summary),
+                        meta,
+                        action
+                    ));
+                }
+                out
+            }
+        }
+        Err(e) => format!(
+            "<p>{} could not be reached ({}). The Shelf works without it;              this page wakes up when a connection does.</p>",
+            label,
+            esc(&e.to_string())
+        ),
+    };
+    format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Catalog</title></head>\n\
+         <body><h1>Catalog</h1>\n{}\n{}\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
+        form,
+        srcbar(src, "eng"),
+        body
+    )
+}
+
+// ---------------------------------------------------------------------
+// Fetching books: each download runs on its own thread and reports
+// its state here, so the progress page can watch them all come down.
+// Several fetch at once; the Shelf keeps serving throughout. A fetch
+// that stops leaves its partial file in the shelf directory, and
+// fetching the same book again resumes from those bytes when the
+// source honors range requests - a connection that comes and goes
+// still finishes the book, a few sips at a time.
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -609,6 +1116,8 @@ enum Phase {
 }
 
 struct Download {
+    id: usize,
+    url: String,
     name: String,
     received: u64,
     total: u64,
@@ -616,24 +1125,24 @@ struct Download {
     book: usize,
     title: String,
     error: String,
+    link: String,
 }
 
-impl Download {
-    fn idle() -> Self {
-        Download {
-            name: String::new(),
-            received: 0,
-            total: 0,
-            phase: Phase::Idle,
-            book: 0,
-            title: String::new(),
-            error: String::new(),
-        }
+fn set_dl(state: &AppState, id: usize, f: impl FnOnce(&mut Download)) {
+    let mut all = state.downloads.write().unwrap();
+    if let Some(d) = all.iter_mut().find(|d| d.id == id) {
+        f(d);
     }
 }
 
-fn download_json(state: &AppState) -> String {
-    let d = state.download.read().unwrap();
+fn dl_failed(state: &AppState, id: usize, msg: String) {
+    set_dl(state, id, |d| {
+        d.phase = Phase::Failed;
+        d.error = msg;
+    });
+}
+
+fn download_item_json(d: &Download) -> String {
     let phase = match d.phase {
         Phase::Idle => "idle",
         Phase::Running => "running",
@@ -646,7 +1155,8 @@ fn download_json(state: &AppState) -> String {
         0
     };
     format!(
-        "{{\"phase\":\"{}\",\"name\":\"{}\",\"received\":{},\"total\":{},\"percent\":{},\"book\":{},\"title\":\"{}\",\"error\":\"{}\"}}",
+        "{{\"id\":{},\"phase\":\"{}\",\"name\":\"{}\",\"received\":{},\"total\":{},\"percent\":{},\"book\":{},\"title\":\"{}\",\"error\":\"{}\",\"link\":\"{}\"}}",
+        d.id,
         phase,
         json_esc(&d.name),
         d.received,
@@ -654,47 +1164,55 @@ fn download_json(state: &AppState) -> String {
         percent,
         d.book,
         json_esc(&d.title),
-        json_esc(&d.error)
+        json_esc(&d.error),
+        json_esc(&d.link)
     )
+}
+
+fn downloads_json(state: &AppState) -> String {
+    let all = state.downloads.read().unwrap();
+    let items: Vec<String> = all.iter().rev().map(download_item_json).collect();
+    format!("{{\"downloads\":[{}]}}", items.join(","))
 }
 
 const PROGRESS_PAGE: &str = r##"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Fetching</title>
 <style>
 body{font-family:system-ui,sans-serif;margin:24px;color:#111}
-#track{height:22px;background:#eee;border:1px solid #bbb;max-width:640px}
-#bar{height:100%;width:0;background:#3b6fd4;transition:width .4s}
+.track{height:22px;background:#eee;border:1px solid #bbb;max-width:640px}
+.bar{height:100%;width:0;background:#3b6fd4;transition:width .4s}
+.dl{margin-bottom:18px}
 </style></head>
 <body>
-<h1 id="head">Fetching</h1>
-<div id="track"><div id="bar"></div></div>
-<p id="line">starting</p>
-<p id="done"></p>
-<p><a href="/shelf">Shelf</a> - reading keeps working while a book comes down.</p>
+<h1>Fetching</h1>
+<div id="list"></div>
+<p><a href="/shelf">Shelf</a> - reading keeps working while books come down.</p>
 <script>
 function mb(n){ return (n/1000000).toFixed(1) + ' MB'; }
+function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function tick(){
-  fetch('/api/acquire-status').then(function(r){ return r.json(); }).then(function(d){
-    if(d.name){ document.getElementById('head').textContent = 'Fetching ' + d.name; }
-    var line = document.getElementById('line');
-    if(d.phase === 'running'){
-      if(d.total > 0){
-        document.getElementById('bar').style.width = d.percent + '%';
-        line.textContent = mb(d.received) + ' of ' + mb(d.total) + ' - ' + d.percent + '%';
-      } else {
-        line.textContent = mb(d.received) + ' so far';
+  fetch('/api/acquire-status').then(function(r){ return r.json(); }).then(function(j){
+    var list = document.getElementById('list');
+    list.innerHTML = '';
+    var anyRunning = false;
+    if(!j.downloads.length){ list.innerHTML = '<p>nothing is fetching right now.</p>'; }
+    j.downloads.forEach(function(d){
+      var div = document.createElement('div'); div.className = 'dl';
+      var html = '<p><strong>' + esc(d.name) + '</strong></p>';
+      if(d.phase === 'running'){
+        anyRunning = true;
+        html += '<div class="track"><div class="bar" style="width:' + (d.total > 0 ? d.percent : 0) + '%"></div></div>';
+        html += '<p>' + (d.total > 0 ? mb(d.received) + ' of ' + mb(d.total) + ' - ' + d.percent + '%' : mb(d.received) + ' so far') + '</p>';
+      } else if(d.phase === 'done'){
+        html += '<div class="track"><div class="bar" style="width:100%"></div></div>';
+        html += '<p>down: ' + mb(d.received) + '. <a href="' + (d.link ? d.link : '/book/' + d.book) + '">' + esc(d.title) + '</a> is aboard.</p>';
+      } else if(d.phase === 'failed'){
+        html += '<p>the fetch did not finish: ' + esc(d.error) + '</p>';
       }
-      setTimeout(tick, 600);
-    } else if(d.phase === 'done'){
-      document.getElementById('bar').style.width = '100%';
-      line.textContent = 'down: ' + mb(d.received) + '.';
-      document.getElementById('done').innerHTML =
-        '<a href="/book/' + d.book + '">' + d.title + '</a> is aboard. <a href="/shelf">Open the Shelf</a>';
-    } else if(d.phase === 'failed'){
-      line.textContent = 'the fetch did not finish: ' + d.error;
-    } else {
-      line.textContent = 'nothing is fetching right now.';
-    }
+      div.innerHTML = html;
+      list.appendChild(div);
+    });
+    if(anyRunning){ setTimeout(tick, 600); }
   }).catch(function(){ setTimeout(tick, 1500); });
 }
 tick();
@@ -703,7 +1221,7 @@ tick();
 
 fn acquire(state: Arc<AppState>, url: &str, name: &str, size: u64) -> (u16, String) {
     let name_ok = !name.is_empty()
-        && name.ends_with(".zim")
+        && (name.ends_with(".zim") || name.ends_with(".epub"))
         && !name.contains("..")
         && name
             .chars()
@@ -711,13 +1229,23 @@ fn acquire(state: Arc<AppState>, url: &str, name: &str, size: u64) -> (u16, Stri
     if !name_ok {
         return (400, "<p>That file name is not one the Shelf can take.</p>".to_string());
     }
-    if !url.starts_with("https://") || !url.ends_with(".zim") {
+    let url_ok = url.starts_with("https://")
+        && ((name.ends_with(".zim") && url.ends_with(".zim"))
+            || (name.ends_with(".epub")
+                && (url.contains(".epub") || url.starts_with("https://unglue.it/"))));
+    if !url_ok {
         return (400, "<p>That is not a book address.</p>".to_string());
     }
 
-    {
-        let mut d = state.download.write().unwrap();
-        if d.phase == Phase::Running {
+    let part_len = std::fs::metadata(state.dir.join(format!("{}.part", name)))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let id = {
+        let mut all = state.downloads.write().unwrap();
+        if let Some(d) = all
+            .iter()
+            .find(|d| d.phase == Phase::Running && d.name == name)
+        {
             return (
                 409,
                 format!(
@@ -726,75 +1254,104 @@ fn acquire(state: Arc<AppState>, url: &str, name: &str, size: u64) -> (u16, Stri
                 ),
             );
         }
-        *d = Download {
+        let id = all.iter().map(|d| d.id).max().unwrap_or(0) + 1;
+        all.push(Download {
+            id,
+            url: url.to_string(),
             name: name.to_string(),
-            received: 0,
+            received: part_len,
             total: size,
             phase: Phase::Running,
             book: 0,
             title: String::new(),
             error: String::new(),
-        };
-    }
+            link: String::new(),
+        });
+        id
+    };
 
-    let url = url.to_string();
-    let name = name.to_string();
-    std::thread::spawn(move || run_download(state, url, name));
+    let state2 = state.clone();
+    std::thread::spawn(move || run_download(state2, id));
     (200, PROGRESS_PAGE.to_string())
 }
 
-fn download_failed(state: &AppState, part: &std::path::Path, msg: String) {
-    let _ = std::fs::remove_file(part);
-    let mut d = state.download.write().unwrap();
-    d.phase = Phase::Failed;
-    d.error = msg;
-}
-
-fn run_download(state: Arc<AppState>, url: String, name: String) {
+fn run_download(state: Arc<AppState>, id: usize) {
     use std::io::Write;
 
+    let (url, name) = {
+        let all = state.downloads.read().unwrap();
+        match all.iter().find(|d| d.id == id) {
+            Some(d) => (d.url.clone(), d.name.clone()),
+            None => return,
+        }
+    };
     let part = state.dir.join(format!("{}.part", name));
     let dest = state.dir.join(&name);
+    let mut have: u64 = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
-    let response = match state.agent.get(&url).call() {
+    let mut req = agent_for(&state, &url).get(&url);
+    if have > 0 {
+        req = req.set("Range", &format!("bytes={}-", have));
+    }
+    let response = match req.call() {
         Ok(r) => r,
         Err(e) => {
-            download_failed(&state, &part, format!("fetch failed: {}", e));
+            dl_failed(&state, id, format!("fetch failed: {} - fetch again to resume", e));
             return;
         }
     };
+    let status = response.status();
+    let resuming = have > 0 && status == 206;
+    if have > 0 && !resuming && status != 200 {
+        dl_failed(
+            &state,
+            id,
+            format!("the source answered {} - fetch again to resume", status),
+        );
+        return;
+    }
+    if !resuming {
+        have = 0;
+    }
     if let Some(len) = response
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok())
     {
         if len > 0 {
-            state.download.write().unwrap().total = len;
+            let total = have + len;
+            set_dl(&state, id, |d| d.total = total);
         }
     }
 
-    let mut file = match std::fs::File::create(&part) {
+    let opened = if resuming {
+        std::fs::OpenOptions::new().append(true).open(&part)
+    } else {
+        std::fs::File::create(&part)
+    };
+    let mut file = match opened {
         Ok(f) => f,
         Err(e) => {
-            download_failed(&state, &part, e.to_string());
+            dl_failed(&state, id, e.to_string());
             return;
         }
     };
     let mut reader = response.into_reader();
     let mut buf = [0u8; 65536];
-    let mut received: u64 = 0;
+    let mut received: u64 = have;
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 if let Err(e) = file.write_all(&buf[..n]) {
-                    download_failed(&state, &part, e.to_string());
+                    dl_failed(&state, id, format!("{} - fetch again to resume", e));
                     return;
                 }
                 received += n as u64;
-                state.download.write().unwrap().received = received;
+                let r = received;
+                set_dl(&state, id, |d| d.received = r);
             }
             Err(e) => {
-                download_failed(&state, &part, e.to_string());
+                dl_failed(&state, id, format!("{} - fetch again to resume", e));
                 return;
             }
         }
@@ -806,41 +1363,247 @@ fn run_download(state: Arc<AppState>, url: String, name: String) {
             let mut head = [0u8; 3];
             f.read_exact(&mut head).map(|_| head)
         })
-        .map(|head| &head == b"ZIM")
+        .map(|head| {
+            if name.ends_with(".epub") {
+                &head[..2] == b"PK"
+            } else {
+                &head == b"ZIM"
+            }
+        })
         .unwrap_or(false);
     if !magic_ok {
-        download_failed(&state, &part, "the download is not a ZIM book".to_string());
+        let _ = std::fs::remove_file(&part);
+        dl_failed(&state, id, "the download is not the book it claimed to be".to_string());
         return;
     }
     if let Err(e) = std::fs::rename(&part, &dest) {
-        download_failed(&state, &part, e.to_string());
+        dl_failed(&state, id, e.to_string());
         return;
     }
 
     state.reload();
-    let shelf = state.shelf();
-    let mut d = state.download.write().unwrap();
-    match shelf.books.iter().find(|b| b.file_name == name) {
-        Some(book) => {
-            d.phase = Phase::Done;
-            d.book = book.id;
-            d.title = book.title.clone();
+    if name.ends_with(".epub") {
+        let epubs = state.epubs();
+        match epubs.iter().find(|b| b.file_name == name) {
+            Some(book) => {
+                let title = book.title.clone();
+                let link = format!("/epub/{}/", url_encode(&book.file_name));
+                set_dl(&state, id, |d| {
+                    d.phase = Phase::Done;
+                    d.title = title;
+                    d.link = link;
+                });
+            }
+            None => dl_failed(&state, id, "downloaded, but the book would not open".to_string()),
         }
-        None => {
-            d.phase = Phase::Failed;
-            d.error = "downloaded, but the book would not open".to_string();
+    } else {
+        let shelf = state.shelf();
+        match shelf.books.iter().find(|b| b.file_name == name) {
+            Some(book) => {
+                let bid = book.id;
+                let title = book.title.clone();
+                let link = format!("/book/{}", bid);
+                set_dl(&state, id, |d| {
+                    d.phase = Phase::Done;
+                    d.book = bid;
+                    d.title = title;
+                    d.link = link;
+                });
+            }
+            None => dl_failed(&state, id, "downloaded, but the book would not open".to_string()),
         }
     }
 }
 
 // ---------------------------------------------------------------------
 
+// Bookmarks and history: the reader's own marks, kept in a plain
+// JSON file in the shelf directory - readable, movable, theirs.
+
+#[derive(Clone)]
+struct Mark {
+    url: String,
+    title: String,
+}
+
+#[derive(Default)]
+struct BrowserData {
+    bookmarks: Vec<Mark>,
+    history: Vec<Mark>,
+}
+
+fn load_data(dir: &std::path::Path) -> BrowserData {
+    let mut data = BrowserData::default();
+    if let Ok(text) = std::fs::read_to_string(dir.join("umiak-data.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            for key in ["bookmarks", "history"] {
+                if let Some(arr) = v.get(key).and_then(|a| a.as_array()) {
+                    let list: Vec<Mark> = arr
+                        .iter()
+                        .filter_map(|m| {
+                            let url = m.get("url")?.as_str()?.to_string();
+                            let title = m
+                                .get("title")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            Some(Mark { url, title })
+                        })
+                        .collect();
+                    if key == "bookmarks" {
+                        data.bookmarks = list;
+                    } else {
+                        data.history = list;
+                    }
+                }
+            }
+        }
+    }
+    data
+}
+
+fn record_history(state: &AppState, url: &str, title: &str) {
+    if url.is_empty() || url.starts_with("/api/") {
+        return;
+    }
+    {
+        let mut data = state.data.write().unwrap();
+        if data.history.last().map(|m| m.url == url).unwrap_or(false) {
+            return;
+        }
+        data.history.push(Mark {
+            url: url.to_string(),
+            title: title.to_string(),
+        });
+        if data.history.len() > 300 {
+            let excess = data.history.len() - 300;
+            data.history.drain(..excess);
+        }
+    }
+    state.save_data();
+}
+
+fn toggle_bookmark(state: &AppState, url: &str, title: &str) -> bool {
+    let now;
+    {
+        let mut data = state.data.write().unwrap();
+        if let Some(i) = data.bookmarks.iter().position(|m| m.url == url) {
+            data.bookmarks.remove(i);
+            now = false;
+        } else {
+            data.bookmarks.push(Mark {
+                url: url.to_string(),
+                title: title.to_string(),
+            });
+            now = true;
+        }
+    }
+    state.save_data();
+    now
+}
+
+fn bookmarks_page(state: &AppState) -> String {
+    let data = state.data.read().unwrap();
+    let mut body = String::new();
+    if data.bookmarks.is_empty() {
+        body = "<p>No bookmarks yet. The star in the bar keeps the page you are reading.</p>".to_string();
+    } else {
+        for m in &data.bookmarks {
+            body.push_str(&format!(
+                "<p class=\"item\">- <a href=\"{}\">{}</a> <span class=\"meta\">(<a href=\"/bookmark-remove?url={}\">remove</a>)</span></p>\n",
+                esc(&m.url),
+                esc(if m.title.is_empty() { &m.url } else { &m.title }),
+                url_encode(&m.url)
+            ));
+        }
+    }
+    format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Bookmarks</title></head>\n\
+         <body><h1>Bookmarks</h1>\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
+        body
+    )
+}
+
+fn history_page(state: &AppState) -> String {
+    let data = state.data.read().unwrap();
+    let mut body = String::new();
+    if data.history.is_empty() {
+        body = "<p>Nothing read yet in this browser.</p>".to_string();
+    } else {
+        for m in data.history.iter().rev() {
+            body.push_str(&format!(
+                "<p class=\"item\">- <a href=\"{}\">{}</a></p>\n",
+                esc(&m.url),
+                esc(if m.title.is_empty() { &m.url } else { &m.title })
+            ));
+        }
+    }
+    format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>History</title></head>\n\
+         <body><h1>History</h1>\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
+        body
+    )
+}
+
 struct AppState {
     dir: PathBuf,
+    data: RwLock<BrowserData>,
     shelf: RwLock<Arc<Shelf>>,
-    download: RwLock<Download>,
+    epubs: RwLock<Arc<Vec<EpubBook>>>,
+    downloads: RwLock<Vec<Download>>,
     cats: RwLock<Option<(std::time::Instant, Vec<String>)>>,
     agent: ureq::Agent,
+    direct_agent: ureq::Agent,
+}
+
+/// The agent for a URL: loopback and private addresses, and hosts the
+/// environment's NO_PROXY names, are fetched directly - a proxy is a
+/// supply line to the outside, never a tollbooth on the reader's own
+/// street.
+fn agent_for<'a>(state: &'a AppState, url: &str) -> &'a ureq::Agent {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .last()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    let private = host == "localhost"
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.starts_with("192.168.")
+        || host.starts_with("10.")
+        || (host.starts_with("172.")
+            && host
+                .split('.')
+                .nth(1)
+                .and_then(|o| o.parse::<u8>().ok())
+                .map(|o| (16..=31).contains(&o))
+                .unwrap_or(false));
+    if private {
+        return &state.direct_agent;
+    }
+    for var in ["NO_PROXY", "no_proxy"] {
+        if let Ok(list) = std::env::var(var) {
+            for entry in list.split(',') {
+                let entry = entry.trim().to_lowercase();
+                if entry.is_empty() {
+                    continue;
+                }
+                if entry == "*" || host == entry || host.ends_with(&format!(".{}", entry.trim_start_matches('.'))) {
+                    return &state.direct_agent;
+                }
+            }
+        }
+    }
+    &state.agent
 }
 
 impl AppState {
@@ -848,10 +1611,79 @@ impl AppState {
         self.shelf.read().unwrap().clone()
     }
 
+    fn epubs(&self) -> Arc<Vec<EpubBook>> {
+        self.epubs.read().unwrap().clone()
+    }
+
+    fn save_data(&self) {
+        let data = self.data.read().unwrap();
+        fn marks_json(marks: &[Mark]) -> String {
+            marks
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{{\"url\":\"{}\",\"title\":\"{}\"}}",
+                        json_esc(&m.url),
+                        json_esc(&m.title)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        let text = format!(
+            "{{\"bookmarks\":[{}],\"history\":[{}]}}\n",
+            marks_json(&data.bookmarks),
+            marks_json(&data.history)
+        );
+        let _ = std::fs::write(self.dir.join("umiak-data.json"), text);
+    }
+
     fn reload(&self) {
         let fresh = Arc::new(Shelf::open_dir(&self.dir));
         *self.shelf.write().unwrap() = fresh;
+        let fresh_epubs = Arc::new(epub::scan_epubs(&self.dir));
+        *self.epubs.write().unwrap() = fresh_epubs;
     }
+}
+
+fn epub_route(state: &AppState, rest: &str) -> Response<Cursor<Vec<u8>>> {
+    let (file_part, inner) = match rest.split_once('/') {
+        Some((a, b)) => (a, b.to_string()),
+        None => (rest, String::new()),
+    };
+    let file_name = url_decode(file_part);
+    let epubs = state.epubs();
+    let book = match epubs.iter().find(|e| e.file_name == file_name) {
+        Some(b) => b,
+        None => return Response::from_string("no such book\n").with_status_code(404),
+    };
+    if inner.is_empty() {
+        let mut body = format!(
+            "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>{}</title></head>\n<body><h1>{}</h1>\n",
+            esc(&book.title),
+            esc(&book.title)
+        );
+        for (path, label) in &book.chapters {
+            body.push_str(&format!(
+                "<p class=\"item\">- <a href=\"/epub/{}/x/{}\">{}</a></p>\n",
+                url_encode(&book.file_name),
+                path,
+                esc(label)
+            ));
+        }
+        body.push_str("<p><a href=\"/shelf\">Shelf</a></p></body></html>");
+        return html_response(body);
+    }
+    if let Some(inner_path) = inner.strip_prefix("x/") {
+        let decoded = url_decode(inner_path);
+        return match book.entry(&decoded) {
+            Some((mime, bytes)) => Response::from_data(bytes).with_header(
+                Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap(),
+            ),
+            None => Response::from_string("not in this book\n").with_status_code(404),
+        };
+    }
+    Response::from_string("not found\n").with_status_code(404)
 }
 
 fn handle(request: tiny_http::Request, state: Arc<AppState>) {
@@ -862,14 +1694,14 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
     let response = if path == "/" {
         html_response(CHROME.to_string())
     } else if path == "/shelf" {
-        html_response(shelf_page(&shelf))
+        html_response(shelf_page(&shelf, &state.epubs()))
     } else if path == "/favicon.ico" {
         Response::from_data(Vec::new()).with_status_code(204)
     } else if path == "/api/books" {
         json_response(books_json(&shelf))
     } else if path == "/search" {
         let q = query_param(&url, "q").unwrap_or_default();
-        html_response(search_page(&shelf, &q))
+        html_response(search_page(&shelf, &state.epubs(), &q))
     } else if path == "/api/search" {
         let q = query_param(&url, "q").unwrap_or_default();
         json_response(search_json(&shelf, &q))
@@ -877,7 +1709,42 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
         let q = query_param(&url, "q").unwrap_or_default();
         let lang = query_param(&url, "lang").unwrap_or_else(|| "eng".to_string());
         let c = query_param(&url, "c").unwrap_or_default();
-        html_response(catalog_page(&state, &q, &lang, &c))
+        let src = query_param(&url, "src").unwrap_or_else(|| "kiwix".to_string());
+        html_response(catalog_page(&state, &q, &lang, &c, &src))
+    } else if path == "/api/history" {
+        let u = query_param(&url, "url").unwrap_or_default();
+        let t = query_param(&url, "title").unwrap_or_default();
+        record_history(&state, &u, &t);
+        Response::from_data(Vec::new()).with_status_code(204)
+    } else if path == "/api/bookmark" {
+        let u = query_param(&url, "url").unwrap_or_default();
+        let t = query_param(&url, "title").unwrap_or_default();
+        let on = toggle_bookmark(&state, &u, &t);
+        json_response(format!("{{\"bookmarked\":{}}}", on))
+    } else if path == "/api/bookmark-check" {
+        let u = query_param(&url, "url").unwrap_or_default();
+        let on = state
+            .data
+            .read()
+            .unwrap()
+            .bookmarks
+            .iter()
+            .any(|m| m.url == u);
+        json_response(format!("{{\"bookmarked\":{}}}", on))
+    } else if path == "/bookmark-remove" {
+        let u = query_param(&url, "url").unwrap_or_default();
+        {
+            let mut data = state.data.write().unwrap();
+            data.bookmarks.retain(|m| m.url != u);
+        }
+        state.save_data();
+        Response::from_data(Vec::new())
+            .with_status_code(302)
+            .with_header(Header::from_bytes(&b"Location"[..], &b"/bookmarks"[..]).unwrap())
+    } else if path == "/bookmarks" {
+        html_response(bookmarks_page(&state))
+    } else if path == "/history" {
+        html_response(history_page(&state))
     } else if path == "/acquire" {
         let u = query_param(&url, "url").unwrap_or_default();
         let n = query_param(&url, "name").unwrap_or_default();
@@ -889,7 +1756,9 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
     } else if path == "/acquire-progress" {
         html_response(PROGRESS_PAGE.to_string())
     } else if path == "/api/acquire-status" {
-        json_response(download_json(&state))
+        json_response(downloads_json(&state))
+    } else if let Some(rest) = path.strip_prefix("/epub/") {
+        epub_route(&state, rest)
     } else if let Some(rest) = path.strip_prefix("/book/") {
         let (id_part, item_path) = match rest.split_once('/') {
             Some((a, b)) => (a, b.to_string()),
@@ -948,7 +1817,17 @@ fn main() {
     // on a plain network there is none and the connection is direct.
     let mut agent_builder = ureq::AgentBuilder::new()
         .user_agent("Umiak/0.1 (+https://freecomputation.org)")
-        .timeout_connect(std::time::Duration::from_secs(15));
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout_read(std::time::Duration::from_secs(120));
+    if let Ok(connector) = native_tls::TlsConnector::new() {
+        agent_builder = agent_builder.tls_connector(std::sync::Arc::new(connector));
+    }
+    // TLS runs on the platform stack (OpenSSL via ureq's native-tls):
+    // it trusts the machine's own certificate store, which is the
+    // store the reader's other programs already live by - on networks
+    // whose proxy re-signs TLS with a local authority, bundled web
+    // roots cannot verify the connection, and the catalog (and every
+    // download) fails while the reader's browser succeeds.
     for var in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
         if let Ok(p) = std::env::var(var) {
             if let Ok(proxy) = ureq::Proxy::new(&p) {
@@ -958,17 +1837,28 @@ fn main() {
         }
     }
 
+    let mut direct_builder = ureq::AgentBuilder::new()
+        .user_agent("Umiak/0.1 (+https://freecomputation.org)")
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout_read(std::time::Duration::from_secs(120));
+    if let Ok(connector) = native_tls::TlsConnector::new() {
+        direct_builder = direct_builder.tls_connector(std::sync::Arc::new(connector));
+    }
     let dir = PathBuf::from(&shelf_dir);
     let state = Arc::new(AppState {
+        direct_agent: direct_builder.build(),
+        data: RwLock::new(load_data(&dir)),
+        epubs: RwLock::new(Arc::new(epub::scan_epubs(&dir))),
         shelf: RwLock::new(Arc::new(Shelf::open_dir(&dir))),
-        download: RwLock::new(Download::idle()),
+        downloads: RwLock::new(Vec::new()),
         cats: RwLock::new(None),
         dir,
         agent: agent_builder.build(),
     });
     println!(
-        "umiak-server: {} book(s) aboard from {}",
+        "umiak-server: {} zim and {} epub book(s) aboard from {}",
         state.shelf().books.len(),
+        state.epubs().len(),
         shelf_dir
     );
 
@@ -978,5 +1868,63 @@ fn main() {
     for request in server.incoming_requests() {
         let state = state.clone();
         std::thread::spawn(move || handle(request, state));
+    }
+}
+
+// ---------------------------------------------------------------------
+// Feed parser checks against the feeds' own bytes (trimmed excerpts,
+// fetched 2026-11-09). The live fetch paths are exercised by the smoke
+// runs; these pin the parsers to the real shapes the sources serve.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gutenberg_search_names_book_pages() {
+        let xml = include_str!("../tests/fixtures/gutenberg-search.xml");
+        let entries = parse_feed_opds(xml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "page");
+        assert_eq!(entries[0].href, "/ebooks/84.opds");
+        assert!(entries[0].title.contains("Frankenstein"));
+    }
+
+    #[test]
+    fn gutenberg_book_page_offers_the_small_epub() {
+        let xml = include_str!("../tests/fixtures/gutenberg-book.xml");
+        let entries = parse_feed_opds(xml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "epub");
+        assert!(entries[0].href.contains("84.epub.noimages"));
+        assert_eq!(entries[0].file_name, "84.epub");
+    }
+
+    #[test]
+    fn unglue_download_endpoint_names_from_title() {
+        let xml = include_str!("../tests/fixtures/unglue.xml");
+        let entries = parse_feed_opds(xml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "epub");
+        assert!(entries[0].href.contains("/download_ebook/"));
+        assert!(entries[0].file_name.ends_with("-epub.epub"));
+    }
+
+    #[test]
+    fn sermonindex_entries_name_zim_files() {
+        let xml = include_str!("../tests/fixtures/sermon.xml");
+        let entries = parse_feed_opds(xml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "zim");
+        assert!(entries[0].file_name.ends_with(".zim"));
+    }
+
+    #[test]
+    fn openlibrary_publications_come_from_groups() {
+        let text = include_str!("../tests/fixtures/openlibrary.json");
+        let entries = parse_opds2(text);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "web");
+        assert!(entries[0].href.contains("openlibrary.org/works/"));
     }
 }
