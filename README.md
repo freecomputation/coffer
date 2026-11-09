@@ -112,6 +112,23 @@ reader is our own, in the server: header, directories, and the
 archive's Hilbert-curve tile ids, checked against a real archive
 whose directory it reproduces exactly.
 
+The Shelf also grows by editions. An edition is a signed manifest
+naming shelf files and the content-defined chunks each file breaks
+into; a mirror is anywhere that holds the manifest and the chunks -
+an http address, or a directory on a disk that arrived by hand. The
+Sync page takes a mirror and fetches only the chunks this shelf
+does not already have into a shared pool, verifies every chunk and
+every assembled file by hash, and shelves what passes. A changed
+byte in a book costs the one chunk that covers it; an interrupted
+sync resumes from the pool; a tampered chunk is refused by its
+hash and nothing is shelved. Signed editions must answer to a key
+named in trusted-keys.txt in the shelf directory, and an unsigned
+edition is refused unless the owner ticks the box on purpose - the
+same discipline as the downloads, one level up. The publisher side
+is a subcommand of the server itself:
+"umiak-server edition pack <shelf-dir> <mirror-dir> <name>" with
+"--key <key-file>" to sign.
+
 ## Design
 
 See DESIGN.md for the determinations this code answers to.
