@@ -143,6 +143,105 @@ open licences, and gated repos need an account acceptance first.
 USPTO patents - weekly bulk files, public domain, about 2.1 TB for
 2001 to 2023 grants alone. A vault edition, not a shelf book.
 
+## Computer books
+
+There is no legitimate one-download corpus of computing books, and
+anyone selling one is selling piracy. What exists is the Kiwix
+computing shelf, a canon of open textbooks that shelve one book at a
+time, and one metadata harvest that pulls the open-access slice out
+of the big publishers.
+
+The Kiwix computing shelf - Wikibooks English is 5.1 GiB in the maxi
+form and 2.9 GiB without pictures (January 2026 builds), and its
+computing shelf carries programming, algorithms, operating systems,
+and networking textbooks. About 107 Stack Exchange sites sail as
+their own ZIMs under CC BY-SA: Stack Overflow runs about 75 GB in
+the 2023-11 build, which makes it vault-adjacent, and the smaller
+sites run a few GB each. DevDocs arrives per docset at 5 to 20 MB
+apiece. ArchWiki is a single ZIM, freeCodeCamp about 3 GB, and a
+Wikipedia computing topic pack about 909 MB. LibreTexts has no
+single computer science ZIM; its computing titles sit inside the
+Engineering and Workforce library ZIMs and as per-book PDFs.
+
+The textbook canon - SICP from MIT Press is CC BY-SA 4.0 as HTML,
+with no official single PDF. How to Design Programs 2e is CC
+BY-NC-ND, Think Python CC BY-NC 3.0 with the Green Tea Press family
+varying book by book, Pro Git CC BY-NC-SA with PDF and EPUB at
+git-scm.com, Beej's Guides CC BY-NC-ND with their code public
+domain, and Crypto 101 CC BY-NC as a GitHub releases PDF.
+Mathematics for Computer Science is a free MIT OCW PDF whose licence
+reads CC BY-SA in one place and CC BY-NC-SA in the book itself;
+OpenStax's Introduction to Computer Science and Introduction to
+Python Programming are free PDFs with the same kind of licence
+discrepancy between crawls. Check the licence inside the PDF before
+shelving either. The Boneh and Shoup cryptography draft is free to
+download and states no open licence; shelve it as a free draft, not
+an open book. The Art of Unix Programming is CC BY-ND HTML, the
+kernel documentation rides inside the kernel source under GPL-2.0,
+and TLDP is per-document and largely dormant. Dive Into Python
+survives only in mirrors; the original site has been gone since
+2011 (the first book GFDL, the third CC BY-SA).
+
+The publisher harvest - DOAB's CC0 KBART file, filtered to
+computing, is the route into Springer Nature's 4,000 or more
+open-access books and MIT Press's open list. Neither publisher
+offers a bulk file; the books are per-title PDF or EPUB, mostly CC
+BY, sitting at the publisher or at OAPEN.
+
+## Global intelligence
+
+World Bank WDI - the full World Development Indicators database as
+one CSV zip, CC BY 4.0, refreshed quarterly, hundreds of MB:
+roughly 1,400 indicators across 217 economies back to 1960. The IMF
+publishes real per-dataset entire-dataset files plus an SDMX 3.0
+API, but no all-IMF dump. OECD data rides an SDMX REST API under CC
+BY 4.0. UNdata is per-query only, capped near 100,000 records an
+export, with no dump.
+
+GDELT - the global events firehose: news-derived events, mentions,
+and the Global Knowledge Graph published every 15 minutes as small
+zips under CC BY 4.0 (the licence as recorded by Our World in
+Data's origins file). A day of events runs 10 to 30 MB; the full
+history is multiple TB and belongs to the vault.
+
+UCDP - Uppsala's conflict event data, CC BY 4.0, annual CSV
+releases, shelf-sized. V-Dem v16 is CC BY-SA with direct ZIP
+downloads. PRIO-GRID 3.0 ships as an open-source R package whose
+variable licences follow their sources. Freedom House publishes
+free Excel files with no open licence stated; shelve as
+free-with-attribution.
+
+HDX - the Humanitarian Data Exchange holds some 19,000 datasets and
+offers no single dump; bulk means a paginated harvest through its
+CKAN API, licences set per dataset. Our World in Data publishes
+per-table CSV, XLSX, and Parquet files from its catalog, CC BY for
+its own work. Gapminder is CC BY 4.0 on GitHub with no single zip.
+
+Earth and hazards - the USGS earthquake catalog is public domain
+through an API capped at 20,000 events a query, so bulk means
+splitting by date. GDACS disaster alerts are free with no sign-in,
+attribution asked. WorldPop population rasters are CC BY 4.0 as
+per-country GeoTIFFs; the global 100 m all-years set is
+vault-adjacent. GHSL settlement layers download free with no
+registration; the full multi-epoch 100 m set is vault in aggregate.
+
+Perry-Castañeda - UT Austin's map library: some 70,000 digitized
+maps, many of them CIA-produced and public domain, per-map only,
+with no bulk route.
+
+CIA CREST - 934,738 declassified documents sit on the Internet
+Archive under CIA-RDP identifiers, enumerable through the Archive's
+scrape API and downloadable in bulk; public domain, frozen at the
+January 2017 release, and vault-tier as a whole with its total byte
+size unverified. RAND reports are per-document only, CC BY 4.0 for
+newer ones, with older reports prohibiting re-hosting. The
+Federation of American Scientists library is per-document plus
+crawlable file trees, no bulk.
+
+Glottolog 5.3 and WALS - the language-structure atlases, both CC BY
+4.0 as small CLDF downloads from GitHub and Zenodo. The natural
+companions to Tatoeba and Wiktionary on the language shelf.
+
 ## Not routes
 
 Wikimedia Commons media has no bulk download; the dumps carry text
@@ -189,3 +288,25 @@ file contents in bulk require a signed agreement and paid egress.
 Common Crawl is free and enormous (about 90 TB per monthly crawl)
 and its contents keep their own copyright; it is training material,
 not library cargo.
+
+OSTEP (Operating Systems: Three Easy Pieces) is free to read and
+all rights reserved; the authors ask readers to link, not copy, and
+the single-file PDF is paid. Crafting Interpreters is web-only with
+CC BY-NC-ND prose and no official book file. Neither belongs on a
+redistributable shelf.
+
+ACLED conflict data sits behind registration and a non-transferable,
+non-commercial licence, with disaggregated data on paid tiers. The
+Global Terrorism Database is form-gated, forbids redistribution,
+and froze at 2020. SIPRI's databases download free, but its terms
+cap reproduction at under 10 percent of a dataset without
+permission, which is not an open licence. Ethnologue is a hard
+paywall with no bulk at any tier. OpenSky's full flight history is
+application-reviewed and its terms forbid operational use and
+redistribution. NASA FIRMS fire data needs a free map key, and its
+archive needs an Earthdata login. DTIC's public search has been
+offline since about August 2026 with no restoration date; the
+Internet Archive's DTIC collection is the surviving route.
+Springer and MIT Press open-access books have no bulk feed, and
+free-programming-books, for all its fame, is a list of links and
+not a single file.
