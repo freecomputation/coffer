@@ -11,4 +11,5 @@ tiny_http = "0.12"
 ureq = { version = "2", default-features = false, features = ["native-tls", "charset", "gzip", "brotli"] }
 zip = "2"
 serde_json = "1"
+flate2 = "1"
 native-tls = "0.2"

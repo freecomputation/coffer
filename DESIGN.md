@@ -28,6 +28,8 @@ Sync: desync chunks over any transport, including a folder on a USB stick. Verif
 
 Fetching (Umiak, determined by the builds of 2026-11-09): the Shelf holds two formats, ZIM through the FFI and EPUB read directly (the spine becomes the contents page, and the book's own files are served at their zip paths so its links and images resolve). Catalogs are OPDS: Kiwix as the stocking catalog, Gutenberg and Unglue.it and SermonIndex as OPDS 1.x side doors (Gutenberg needs a second hop from its search feed to each book page), Open Library as OPDS 2.0 discovery whose books are lent, not shelved, because its feed offers no file to take. Downloads run in parallel and resume from partial files by range request, because a connection that comes and goes must still finish the book. TLS is the platform stack and the machine's own certificate store, never a bundled root list: a browser that cannot verify what the reader's other programs verify is broken on real networks. A configured proxy is a supply line to the outside only - loopback, private addresses, and NO_PROXY hosts are always fetched directly.
 
+Maps (Umiak, determined by the builds of 2026-11-09): the map layer is PMTiles read by our own reader in the server - one file per map on the Shelf, tiles served over the same loopback HTTP as everything else. Raster archives render in a server-drawn tile grid that needs no scripts and no tile server; vector (MVT) archives are served at the tile endpoint, with their rendering library a later vendoring decision rather than a network dependency.
+
 
 First benchmarks owed: desync chunk reuse across successive
 recompressed ZIM editions, and search latency on genuinely weak

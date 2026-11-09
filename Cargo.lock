@@ -1005,6 +1005,7 @@ dependencies = [
 name = "umiak-server"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "native-tls",
  "serde_json",
  "tiny_http",
