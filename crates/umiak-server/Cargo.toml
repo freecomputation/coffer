@@ -8,3 +8,4 @@ description = "Loopback HTTP server for the Shelf. Every Umiak surface talks to 
 [dependencies]
 umiak-core = { path = "../umiak-core" }
 tiny_http = "0.12"
+ureq = "2"
