@@ -122,35 +122,72 @@ fn home(shelf: &Shelf) -> String {
     )
 }
 
-fn search_page(shelf: &Shelf, query: &str) -> String {
-    let mut sections = String::new();
+struct Hit {
+    book: usize,
+    path: String,
+    title: String,
+    score: f64,
+}
+
+/// One search across every book aboard. Each book answers in its own
+/// ranking (full text where it has an index, title suggestions where it
+/// does not); the lists are merged by reciprocal rank fusion so a book's
+/// best answer outranks another book's twentieth. Rank inside the book
+/// is the only signal the books share, which is exactly what RRF needs.
+fn federated_search(shelf: &Shelf, query: &str) -> Vec<Hit> {
+    const RRF_K: f64 = 60.0;
+    let mut hits: Vec<Hit> = Vec::new();
     for b in &shelf.books {
-        let hits = match b.search(query, 20) {
+        let results = match b.search(query, 20) {
             Ok(h) => h,
             Err(_) => b.suggest(query, 20).unwrap_or_default(),
         };
-        if hits.is_empty() {
-            continue;
-        }
-        sections.push_str(&format!("<h2>{}</h2>\n<ul>\n", esc(&b.title)));
-        for (path, title) in hits {
-            sections.push_str(&format!(
-                "<li><a href=\"/book/{}/{}\">{}</a></li>\n",
-                b.id,
+        for (rank, (path, title)) in results.into_iter().enumerate() {
+            hits.push(Hit {
+                book: b.id,
                 path,
-                esc(if title.is_empty() { &path } else { &title })
+                title,
+                score: 1.0 / (RRF_K + rank as f64 + 1.0),
+            });
+        }
+    }
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.book.cmp(&b.book))
+    });
+    hits.truncate(50);
+    hits
+}
+
+fn search_page(shelf: &Shelf, query: &str) -> String {
+    let hits = federated_search(shelf, query);
+    let mut body = String::new();
+    if hits.is_empty() {
+        body = "<p>Nothing aboard matches that.</p>".to_string();
+    } else {
+        body.push_str("<ul>\n");
+        for h in &hits {
+            let book_title = shelf
+                .book(h.book)
+                .map(|b| b.title.as_str())
+                .unwrap_or_default();
+            body.push_str(&format!(
+                "<li><a href=\"/book/{}/{}\">{}</a> <span class=\"meta\">in {}</span></li>\n",
+                h.book,
+                h.path,
+                esc(if h.title.is_empty() { &h.path } else { &h.title }),
+                esc(book_title)
             ));
         }
-        sections.push_str("</ul>\n");
-    }
-    if sections.is_empty() {
-        sections = "<p>Nothing aboard matches that.</p>".to_string();
+        body.push_str("</ul>\n");
     }
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Search</title></head>\n\
          <body><h1>Search: {}</h1>\n{}\n<p><a href=\"/\">Shelf</a></p></body></html>",
         esc(query),
-        sections
+        body
     )
 }
 
@@ -176,25 +213,23 @@ fn books_json(shelf: &Shelf) -> String {
 }
 
 fn search_json(shelf: &Shelf, query: &str) -> String {
+    let hits = federated_search(shelf, query);
     let mut out = String::from("{\"results\":[");
-    let mut first = true;
-    for b in &shelf.books {
-        let hits = match b.search(query, 20) {
-            Ok(h) => h,
-            Err(_) => b.suggest(query, 20).unwrap_or_default(),
-        };
-        for (path, title) in hits {
-            if !first {
-                out.push(',');
-            }
-            first = false;
-            out.push_str(&format!(
-                "{{\"book\":{},\"path\":\"{}\",\"title\":\"{}\"}}",
-                b.id,
-                json_esc(&path),
-                json_esc(&title)
-            ));
+    for (i, h) in hits.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
         }
+        let book_title = shelf
+            .book(h.book)
+            .map(|b| b.title.as_str())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "{{\"book\":{},\"book_title\":\"{}\",\"path\":\"{}\",\"title\":\"{}\"}}",
+            h.book,
+            json_esc(book_title),
+            json_esc(&h.path),
+            json_esc(&h.title)
+        ));
     }
     out.push_str("]}");
     out
