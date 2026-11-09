@@ -205,7 +205,7 @@ fn shelf_page(shelf: &Shelf) -> String {
     let mut items = String::new();
     for b in &shelf.books {
         items.push_str(&format!(
-            "<li><a href=\"/book/{}\">{}</a> <span class=\"meta\">{} articles, {}</span></li>\n",
+            "<p class=\"item\"><a href=\"/book/{}\">{}</a> <span class=\"meta\">{} articles, {}</span></p>\n",
             b.id,
             esc(&b.title),
             b.article_count,
@@ -213,14 +213,14 @@ fn shelf_page(shelf: &Shelf) -> String {
         ));
     }
     if shelf.books.is_empty() {
-        items = "<li>No books aboard yet. Add .zim files to the shelf directory, or fetch some from the <a href=\"/catalog\">catalog</a>.</li>".to_string();
+        items = "<p>No books aboard yet. Add .zim files to the shelf directory, or fetch some from the <a href=\"/catalog\">catalog</a>.</p>".to_string();
     }
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Shelf</title></head>\n\
          <body><h1>The Shelf</h1>\n\
          <form action=\"/search\" method=\"get\"><input name=\"q\" size=\"40\" \
          placeholder=\"Search everything aboard\"> <input type=\"submit\" value=\"Search\"></form>\n\
-         <h2>Aboard</h2>\n<ul>\n{}</ul>\n\
+         <h2>Aboard</h2>\n{}\
          <p><a href=\"/catalog\">Catalog: fetch more books</a></p></body></html>",
         items
     )
@@ -271,21 +271,21 @@ fn search_page(shelf: &Shelf, query: &str) -> String {
     if hits.is_empty() {
         body = "<p>Nothing aboard matches that.</p>".to_string();
     } else {
-        body.push_str("<ul>\n");
+        body.push_str("");
         for h in &hits {
             let book_title = shelf
                 .book(h.book)
                 .map(|b| b.title.as_str())
                 .unwrap_or_default();
             body.push_str(&format!(
-                "<li><a href=\"/book/{}/{}\">{}</a> <span class=\"meta\">in {}</span></li>\n",
+                "<p class=\"item\"><a href=\"/book/{}/{}\">{}</a> <span class=\"meta\">in {}</span></p>\n",
                 h.book,
                 h.path,
                 esc(if h.title.is_empty() { &h.path } else { &h.title }),
                 esc(book_title)
             ));
         }
-        body.push_str("</ul>\n");
+        body.push_str("");
     }
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Search</title></head>\n\
@@ -550,7 +550,7 @@ fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String 
                 }
                 let mut out = String::new();
                 for (publisher, es) in &groups {
-                    out.push_str(&format!("<h2>{}</h2>\n<ul>\n", esc(publisher)));
+                    out.push_str(&format!("<h2>{}</h2>\n", esc(publisher)));
                     for e in es {
                         let aboard = shelf.books.iter().any(|b| b.file_name == e.file_name);
                         let meta = format!(
@@ -570,14 +570,14 @@ fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String 
                             )
                         };
                         out.push_str(&format!(
-                            "<li><strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</li>\n",
+                            "<p class=\"item\"><strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</p>\n",
                             esc(&e.title),
                             esc(&e.summary),
                             meta,
                             action
                         ));
                     }
-                    out.push_str("</ul>\n");
+                    out.push_str("");
                 }
                 out
             }
