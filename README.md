@@ -14,17 +14,21 @@ Umiak is the first form of idem, the system that grows underneath it.
 
 ## Layout
 
-- `crates/zim-ffi` - the only C++ in the project: a thin C shim over
-  libzim with a safe Rust wrapper.
-- `crates/umiak-core` - the Shelf: discovery and reading of the books
-  aboard.
-- `crates/umiak-server` - the loopback HTTP server every surface talks
-  to. The chrome, the Shelf home, book content, one federated search
-  across everything aboard, and the catalog.
-- `app/` - the Tauri shell: one system-webview window onto the server.
-  Deliberately thin; the engine is borrowed and swappable.
-- `tools/` - the fixture generator (indexed and no-index test books)
-  and `smoke.sh`, the end to end check.
+`crates/zim-ffi` - the only C++ in the project: a thin C shim over
+libzim with a safe Rust wrapper.
+
+`crates/umiak-core` - the Shelf: discovery and reading of the books
+aboard.
+
+`crates/umiak-server` - the loopback HTTP server every surface talks
+to. The chrome, the Shelf home, book content, one federated search
+across everything aboard, and the catalog.
+
+`app/` - the Tauri shell: one system-webview window onto the server.
+Deliberately thin; the engine is borrowed and swappable.
+
+`tools/` - the fixture generator (indexed and no-index test books)
+and `smoke.sh`, the end to end check.
 
 ## Build and run
 
