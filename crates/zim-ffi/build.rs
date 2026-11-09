@@ -31,7 +31,17 @@ fn main() {
     if let Ok(lib) = env::var("UMIAK_LIBZIM_LIB") {
         let out = PathBuf::from(env::var("OUT_DIR").unwrap());
         let link = out.join("libzim.so");
-        if !link.exists() {
+        // A dangling symlink (its target moved or vanished) reads as
+        // absent to exists() but still blocks creation; check the
+        // link itself, and re-point it when the target has changed.
+        let stale = match std::fs::read_link(&link) {
+            Ok(target) => target != std::path::PathBuf::from(&lib),
+            Err(_) => std::fs::symlink_metadata(&link).is_ok(),
+        };
+        if stale {
+            let _ = std::fs::remove_file(&link);
+        }
+        if std::fs::symlink_metadata(&link).is_err() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&lib, &link).expect("symlink libzim");
         }
