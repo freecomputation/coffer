@@ -1,6 +1,7 @@
 /target
 /app/src-tauri/target
 /shelf
+/shelf-real
 /third-party/*.deb
 /third-party/libzim-dev/
 *.zim

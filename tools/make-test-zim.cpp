@@ -5,10 +5,15 @@
 //   g++ -std=c++17 -I third-party/libzim-dev/usr/include \
 //       tools/make-test-zim.cpp -o make-test-zim -l:libzim.so.8
 //   ./make-test-zim shelf-test/test.zim
+//   ./make-test-zim shelf-test/test-noindex.zim noindex
+//
+// The noindex variant carries no full-text index, like most of the real
+// catalog: search against it must fall back to title suggestions.
 
 #include <zim/writer/creator.h>
 #include <zim/writer/item.h>
 
+#include <cstring>
 #include <iostream>
 #include <memory>
 
@@ -28,8 +33,9 @@ int main(int argc, char** argv) {
         std::cerr << "usage: make-test-zim <out.zim>\n";
         return 1;
     }
+    bool indexing = !(argc > 2 && std::strcmp(argv[2], "noindex") == 0);
     zim::writer::Creator creator;
-    creator.configIndexing(true, "eng");
+    if (indexing) creator.configIndexing(true, "eng");
     creator.startZimCreation(argv[1]);
 
     creator.addMetadata("Title", "Umiak Test Shelf");
