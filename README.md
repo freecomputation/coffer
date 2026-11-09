@@ -81,9 +81,11 @@ surfaces work in any browser pointed at the loopback address.
 
 The Shelf is the library: every ZIM in the shelf directory, searchable
 as one collection. The catalog reads the Kiwix OPDS feed when a
-connection exists and shelves what you pick; offline it simply says
-so, and nothing else changes. The fetch honors the standard proxy
-environment variables when they are set.
+connection exists, organized by category and by publisher, and shelves
+what you pick; a progress page shows the book coming down, and reading
+keeps working while it does. Offline the catalog simply says so, and
+nothing else changes. The fetch honors the standard proxy environment
+variables when they are set.
 
 ## Design
 

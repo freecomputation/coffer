@@ -6,8 +6,11 @@
 //!   GET /book/<id>           redirect to the book's main entry
 //!   GET /book/<id>/<path>    one item out of a book, with its MIME type
 //!   GET /search?q=<query>    one search across every book aboard
-//!   GET /catalog?q=&lang=    the Kiwix OPDS catalog, when a wire exists
-//!   GET /acquire?url=&name=  download a book into the shelf and reshelve
+//!   GET /catalog?q=&lang=&c= the Kiwix OPDS catalog, organized by
+//!                            category and publisher, when a wire exists
+//!   GET /acquire?url=&name=  start fetching a book onto the shelf
+//!   GET /acquire-progress    watch the fetch come down
+//!   GET /api/acquire-status  the fetch as JSON
 //!   GET /api/books           the shelf as JSON
 //!   GET /api/search?q=       search results as JSON
 //!
@@ -344,6 +347,7 @@ fn search_json(shelf: &Shelf, query: &str) -> String {
 struct CatalogEntry {
     title: String,
     summary: String,
+    publisher: String,
     articles: String,
     ftindex: bool,
     size: u64,
@@ -400,9 +404,18 @@ fn parse_catalog(xml: &str) -> Vec<CatalogEntry> {
             .next()
             .unwrap_or("book.zim")
             .to_string();
+        let publisher = match block.find("<publisher>") {
+            Some(start) => {
+                let rest = &block[start..];
+                let end = rest.find("</publisher>").unwrap_or(rest.len());
+                xml_tag(&rest[..end], "name")
+            }
+            None => String::new(),
+        };
         out.push(CatalogEntry {
             title: xml_tag(block, "title"),
             summary: xml_tag(block, "summary"),
+            publisher,
             articles: xml_tag(block, "articleCount"),
             ftindex: block.contains("_ftindex:yes"),
             size: xml_attr(tag_text, "length").parse().unwrap_or(0),
@@ -413,19 +426,104 @@ fn parse_catalog(xml: &str) -> Vec<CatalogEntry> {
     out
 }
 
-fn catalog_page(state: &AppState, query: &str, lang: &str) -> String {
+fn pretty_category(cat: &str) -> String {
+    let spaced = cat.replace('_', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => spaced,
+    }
+}
+
+fn parse_categories(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for block in xml.split("<entry>").skip(1) {
+        let block = block.split("</entry>").next().unwrap_or("");
+        let title = xml_tag(block, "title");
+        if !title.is_empty() {
+            out.push(title);
+        }
+    }
+    out
+}
+
+/// The category shelf, cached for ten minutes: it changes rarely, and
+/// the catalog page should not pay a second fetch for it every visit.
+fn categories(state: &AppState) -> Vec<String> {
+    const TTL_SECS: u64 = 600;
+    {
+        let cache = state.cats.read().unwrap();
+        if let Some((when, cats)) = &*cache {
+            if when.elapsed().as_secs() < TTL_SECS {
+                return cats.clone();
+            }
+        }
+    }
+    let fetched = state
+        .agent
+        .get("https://library.kiwix.org/catalog/v2/categories")
+        .call()
+        .and_then(|r| r.into_string().map_err(ureq::Error::from));
+    match fetched {
+        Ok(xml) => {
+            let cats = parse_categories(&xml);
+            *state.cats.write().unwrap() = Some((std::time::Instant::now(), cats.clone()));
+            cats
+        }
+        Err(_) => state
+            .cats
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|(_, cats)| cats.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn catalog_page(state: &AppState, query: &str, lang: &str, cat: &str) -> String {
+    let lang = if lang.is_empty() { "eng" } else { lang };
     let form = format!(
         "<form action=\"/catalog\" method=\"get\">\
          <input name=\"q\" size=\"32\" value=\"{}\" placeholder=\"Search the catalog\"> \
          <input name=\"lang\" size=\"4\" value=\"{}\"> \
+         <input type=\"hidden\" name=\"c\" value=\"{}\"> \
          <input type=\"submit\" value=\"Search\"></form>",
         esc(query),
-        esc(if lang.is_empty() { "eng" } else { lang })
+        esc(lang),
+        esc(cat)
     );
+
+    let mut catbar = String::from("<p class=\"cats\">");
+    if cat.is_empty() {
+        catbar.push_str("<strong>All</strong>");
+    } else {
+        catbar.push_str(&format!(
+            "<a href=\"/catalog?lang={}\">All</a>",
+            url_encode(lang)
+        ));
+    }
+    for c in categories(state) {
+        catbar.push_str(" | ");
+        if c == cat {
+            catbar.push_str(&format!("<strong>{}</strong>", esc(&pretty_category(&c))));
+        } else {
+            catbar.push_str(&format!(
+                "<a href=\"/catalog?c={}&lang={}\">{}</a>",
+                url_encode(&c),
+                url_encode(lang),
+                esc(&pretty_category(&c))
+            ));
+        }
+    }
+    catbar.push_str("</p>");
+
     let mut url = "https://library.kiwix.org/catalog/v2/entries?count=24".to_string();
-    url.push_str(&format!("&lang={}", url_encode(if lang.is_empty() { "eng" } else { lang })));
+    url.push_str(&format!("&lang={}", url_encode(lang)));
     if !query.is_empty() {
         url.push_str(&format!("&q={}", url_encode(query)));
+    }
+    if !cat.is_empty() {
+        url.push_str(&format!("&category={}", url_encode(cat)));
     }
 
     let fetched = state
@@ -440,34 +538,48 @@ fn catalog_page(state: &AppState, query: &str, lang: &str) -> String {
                 "<p>The catalog has nothing by that name.</p>".to_string()
             } else {
                 let shelf = state.shelf();
-                let mut list = String::from("<ul>\n");
+                let mut groups: std::collections::BTreeMap<String, Vec<&CatalogEntry>> =
+                    std::collections::BTreeMap::new();
                 for e in &entries {
-                    let aboard = shelf.books.iter().any(|b| b.file_name == e.file_name);
-                    let meta = format!(
-                        "{} articles, {:.1} MB, full text index: {}",
-                        esc(&e.articles),
-                        e.size as f64 / 1_000_000.0,
-                        if e.ftindex { "yes" } else { "no" }
-                    );
-                    let action = if aboard {
-                        "<span class=\"meta\">aboard</span>".to_string()
+                    let key = if e.publisher.is_empty() {
+                        "Other sources".to_string()
                     } else {
-                        format!(
-                            "<a href=\"/acquire?url={}&name={}\">Add to the Shelf</a>",
-                            url_encode(&e.zim_url),
-                            url_encode(&e.file_name)
-                        )
+                        e.publisher.clone()
                     };
-                    list.push_str(&format!(
-                        "<li><strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</li>\n",
-                        esc(&e.title),
-                        esc(&e.summary),
-                        meta,
-                        action
-                    ));
+                    groups.entry(key).or_default().push(e);
                 }
-                list.push_str("</ul>");
-                list
+                let mut out = String::new();
+                for (publisher, es) in &groups {
+                    out.push_str(&format!("<h2>{}</h2>\n<ul>\n", esc(publisher)));
+                    for e in es {
+                        let aboard = shelf.books.iter().any(|b| b.file_name == e.file_name);
+                        let meta = format!(
+                            "{} articles, {:.1} MB, full text index: {}",
+                            esc(&e.articles),
+                            e.size as f64 / 1_000_000.0,
+                            if e.ftindex { "yes" } else { "no" }
+                        );
+                        let action = if aboard {
+                            "<span class=\"meta\">aboard</span>".to_string()
+                        } else {
+                            format!(
+                                "<a href=\"/acquire?url={}&name={}&size={}\">Add to the Shelf</a>",
+                                url_encode(&e.zim_url),
+                                url_encode(&e.file_name),
+                                e.size
+                            )
+                        };
+                        out.push_str(&format!(
+                            "<li><strong>{}</strong> - {}<br><span class=\"meta\">{}</span> {}</li>\n",
+                            esc(&e.title),
+                            esc(&e.summary),
+                            meta,
+                            action
+                        ));
+                    }
+                    out.push_str("</ul>\n");
+                }
+                out
             }
         }
         Err(e) => format!(
@@ -478,12 +590,118 @@ fn catalog_page(state: &AppState, query: &str, lang: &str) -> String {
     };
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Catalog</title></head>\n\
-         <body><h1>Catalog</h1>\n{}\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
-        form, body
+         <body><h1>Catalog</h1>\n{}\n{}\n{}\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
+        form, catbar, body
     )
 }
 
-fn acquire(state: &AppState, url: &str, name: &str) -> (u16, String) {
+// ---------------------------------------------------------------------
+// Fetching a book: the download runs on its own thread and reports its
+// state here, so the progress page (and anything else) can watch it
+// come down. One fetch at a time; the Shelf keeps serving throughout.
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Idle,
+    Running,
+    Done,
+    Failed,
+}
+
+struct Download {
+    name: String,
+    received: u64,
+    total: u64,
+    phase: Phase,
+    book: usize,
+    title: String,
+    error: String,
+}
+
+impl Download {
+    fn idle() -> Self {
+        Download {
+            name: String::new(),
+            received: 0,
+            total: 0,
+            phase: Phase::Idle,
+            book: 0,
+            title: String::new(),
+            error: String::new(),
+        }
+    }
+}
+
+fn download_json(state: &AppState) -> String {
+    let d = state.download.read().unwrap();
+    let phase = match d.phase {
+        Phase::Idle => "idle",
+        Phase::Running => "running",
+        Phase::Done => "done",
+        Phase::Failed => "failed",
+    };
+    let percent = if d.total > 0 {
+        d.received * 100 / d.total
+    } else {
+        0
+    };
+    format!(
+        "{{\"phase\":\"{}\",\"name\":\"{}\",\"received\":{},\"total\":{},\"percent\":{},\"book\":{},\"title\":\"{}\",\"error\":\"{}\"}}",
+        phase,
+        json_esc(&d.name),
+        d.received,
+        d.total,
+        percent,
+        d.book,
+        json_esc(&d.title),
+        json_esc(&d.error)
+    )
+}
+
+const PROGRESS_PAGE: &str = r##"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Fetching</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:24px;color:#111}
+#track{height:22px;background:#eee;border:1px solid #bbb;max-width:640px}
+#bar{height:100%;width:0;background:#3b6fd4;transition:width .4s}
+</style></head>
+<body>
+<h1 id="head">Fetching</h1>
+<div id="track"><div id="bar"></div></div>
+<p id="line">starting</p>
+<p id="done"></p>
+<p><a href="/shelf">Shelf</a> - reading keeps working while a book comes down.</p>
+<script>
+function mb(n){ return (n/1000000).toFixed(1) + ' MB'; }
+function tick(){
+  fetch('/api/acquire-status').then(function(r){ return r.json(); }).then(function(d){
+    if(d.name){ document.getElementById('head').textContent = 'Fetching ' + d.name; }
+    var line = document.getElementById('line');
+    if(d.phase === 'running'){
+      if(d.total > 0){
+        document.getElementById('bar').style.width = d.percent + '%';
+        line.textContent = mb(d.received) + ' of ' + mb(d.total) + ' - ' + d.percent + '%';
+      } else {
+        line.textContent = mb(d.received) + ' so far';
+      }
+      setTimeout(tick, 600);
+    } else if(d.phase === 'done'){
+      document.getElementById('bar').style.width = '100%';
+      line.textContent = 'down: ' + mb(d.received) + '.';
+      document.getElementById('done').innerHTML =
+        '<a href="/book/' + d.book + '">' + d.title + '</a> is aboard. <a href="/shelf">Open the Shelf</a>';
+    } else if(d.phase === 'failed'){
+      line.textContent = 'the fetch did not finish: ' + d.error;
+    } else {
+      line.textContent = 'nothing is fetching right now.';
+    }
+  }).catch(function(){ setTimeout(tick, 1500); });
+}
+tick();
+</script>
+</body></html>"##;
+
+fn acquire(state: Arc<AppState>, url: &str, name: &str, size: u64) -> (u16, String) {
     let name_ok = !name.is_empty()
         && name.ends_with(".zim")
         && !name.contains("..")
@@ -497,58 +715,120 @@ fn acquire(state: &AppState, url: &str, name: &str) -> (u16, String) {
         return (400, "<p>That is not a book address.</p>".to_string());
     }
 
-    let part = state.dir.join(format!("{}.part", name));
-    let dest = state.dir.join(name);
-    let result = (|| -> Result<u64, String> {
-        let response = state
-            .agent
-            .get(url)
-            .call()
-            .map_err(|e| format!("fetch failed: {}", e))?;
-        let mut reader = response.into_reader();
-        let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-        let written = std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
-        drop(file);
-        let mut head = [0u8; 3];
-        let mut f = std::fs::File::open(&part).map_err(|e| e.to_string())?;
-        f.read_exact(&mut head).map_err(|e| e.to_string())?;
-        if &head != b"ZIM" {
-            return Err("the download is not a ZIM book".to_string());
+    {
+        let mut d = state.download.write().unwrap();
+        if d.phase == Phase::Running {
+            return (
+                409,
+                format!(
+                    "<p>Already fetching {} - <a href=\"/acquire-progress\">watch it come down</a>.</p>",
+                    esc(&d.name)
+                ),
+            );
         }
-        std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
-        Ok(written)
-    })();
+        *d = Download {
+            name: name.to_string(),
+            received: 0,
+            total: size,
+            phase: Phase::Running,
+            book: 0,
+            title: String::new(),
+            error: String::new(),
+        };
+    }
 
-    match result {
-        Ok(bytes) => {
-            state.reload();
-            let shelf = state.shelf();
-            match shelf.books.iter().find(|b| b.file_name == name) {
-                Some(book) => (
-                    200,
-                    format!(
-                        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Shelved</title></head>\n\
-                         <body><h1>Shelved</h1>\n<p><a href=\"/book/{}\">{}</a> is aboard \
-                         ({:.1} MB, {} articles).</p>\n<p><a href=\"/shelf\">Shelf</a></p></body></html>",
-                        book.id,
-                        esc(&book.title),
-                        bytes as f64 / 1_000_000.0,
-                        book.article_count
-                    ),
-                ),
-                None => (
-                    502,
-                    "<p>Downloaded, but the book would not open. It has been left off the Shelf.</p>"
-                        .to_string(),
-                ),
+    let url = url.to_string();
+    let name = name.to_string();
+    std::thread::spawn(move || run_download(state, url, name));
+    (200, PROGRESS_PAGE.to_string())
+}
+
+fn download_failed(state: &AppState, part: &std::path::Path, msg: String) {
+    let _ = std::fs::remove_file(part);
+    let mut d = state.download.write().unwrap();
+    d.phase = Phase::Failed;
+    d.error = msg;
+}
+
+fn run_download(state: Arc<AppState>, url: String, name: String) {
+    use std::io::Write;
+
+    let part = state.dir.join(format!("{}.part", name));
+    let dest = state.dir.join(&name);
+
+    let response = match state.agent.get(&url).call() {
+        Ok(r) => r,
+        Err(e) => {
+            download_failed(&state, &part, format!("fetch failed: {}", e));
+            return;
+        }
+    };
+    if let Some(len) = response
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if len > 0 {
+            state.download.write().unwrap().total = len;
+        }
+    }
+
+    let mut file = match std::fs::File::create(&part) {
+        Ok(f) => f,
+        Err(e) => {
+            download_failed(&state, &part, e.to_string());
+            return;
+        }
+    };
+    let mut reader = response.into_reader();
+    let mut buf = [0u8; 65536];
+    let mut received: u64 = 0;
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if let Err(e) = file.write_all(&buf[..n]) {
+                    download_failed(&state, &part, e.to_string());
+                    return;
+                }
+                received += n as u64;
+                state.download.write().unwrap().received = received;
+            }
+            Err(e) => {
+                download_failed(&state, &part, e.to_string());
+                return;
             }
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(&part);
-            (
-                502,
-                format!("<p>The fetch did not finish: {}</p>", esc(&e)),
-            )
+    }
+    drop(file);
+
+    let magic_ok = std::fs::File::open(&part)
+        .and_then(|mut f| {
+            let mut head = [0u8; 3];
+            f.read_exact(&mut head).map(|_| head)
+        })
+        .map(|head| &head == b"ZIM")
+        .unwrap_or(false);
+    if !magic_ok {
+        download_failed(&state, &part, "the download is not a ZIM book".to_string());
+        return;
+    }
+    if let Err(e) = std::fs::rename(&part, &dest) {
+        download_failed(&state, &part, e.to_string());
+        return;
+    }
+
+    state.reload();
+    let shelf = state.shelf();
+    let mut d = state.download.write().unwrap();
+    match shelf.books.iter().find(|b| b.file_name == name) {
+        Some(book) => {
+            d.phase = Phase::Done;
+            d.book = book.id;
+            d.title = book.title.clone();
+        }
+        None => {
+            d.phase = Phase::Failed;
+            d.error = "downloaded, but the book would not open".to_string();
         }
     }
 }
@@ -558,6 +838,8 @@ fn acquire(state: &AppState, url: &str, name: &str) -> (u16, String) {
 struct AppState {
     dir: PathBuf,
     shelf: RwLock<Arc<Shelf>>,
+    download: RwLock<Download>,
+    cats: RwLock<Option<(std::time::Instant, Vec<String>)>>,
     agent: ureq::Agent,
 }
 
@@ -594,12 +876,20 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
     } else if path == "/catalog" {
         let q = query_param(&url, "q").unwrap_or_default();
         let lang = query_param(&url, "lang").unwrap_or_else(|| "eng".to_string());
-        html_response(catalog_page(&state, &q, &lang))
+        let c = query_param(&url, "c").unwrap_or_default();
+        html_response(catalog_page(&state, &q, &lang, &c))
     } else if path == "/acquire" {
         let u = query_param(&url, "url").unwrap_or_default();
         let n = query_param(&url, "name").unwrap_or_default();
-        let (status, body) = acquire(&state, &u, &n);
+        let size: u64 = query_param(&url, "size")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let (status, body) = acquire(state.clone(), &u, &n, size);
         html_response(body).with_status_code(status)
+    } else if path == "/acquire-progress" {
+        html_response(PROGRESS_PAGE.to_string())
+    } else if path == "/api/acquire-status" {
+        json_response(download_json(&state))
     } else if let Some(rest) = path.strip_prefix("/book/") {
         let (id_part, item_path) = match rest.split_once('/') {
             Some((a, b)) => (a, b.to_string()),
@@ -671,6 +961,8 @@ fn main() {
     let dir = PathBuf::from(&shelf_dir);
     let state = Arc::new(AppState {
         shelf: RwLock::new(Arc::new(Shelf::open_dir(&dir))),
+        download: RwLock::new(Download::idle()),
+        cats: RwLock::new(None),
         dir,
         agent: agent_builder.build(),
     });
