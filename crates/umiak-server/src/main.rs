@@ -27,6 +27,7 @@ use umiak_core::Shelf;
 
 mod epub;
 mod pmtiles;
+mod sync;
 use epub::EpubBook;
 
 fn esc(s: &str) -> String {
@@ -151,6 +152,7 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#fff;
 <button id="marksbtn">Marks</button>
 <button id="histbtn">History</button>
 <button id="mapsbtn">Maps</button>
+<button id="syncbtn">Sync</button>
 </div>
 <div id="tabs"></div>
 <iframe id="view" src="/shelf"></iframe>
@@ -210,6 +212,7 @@ document.getElementById('reload').onclick=function(){ try{ view.contentWindow.lo
 document.getElementById('shelfbtn').onclick=function(){ go('/shelf'); };
 document.getElementById('catbtn').onclick=function(){ go('/catalog'); };
 document.getElementById('mapsbtn').onclick=function(){ go('/maps'); };
+document.getElementById('syncbtn').onclick=function(){ go('/sync'); };
 document.getElementById('markbtn').onclick=function(){
   var u=current();
   fetch('/api/bookmark?url=' + encodeURIComponent(u) + '&title=' + encodeURIComponent(tabs[active].title || u)).then(function(r){ return r.json(); }).then(function(j){
@@ -1554,6 +1557,7 @@ struct AppState {
     shelf: RwLock<Arc<Shelf>>,
     epubs: RwLock<Arc<Vec<EpubBook>>>,
     maps: RwLock<Arc<Vec<MapItem>>>,
+    sync_job: RwLock<Option<SyncJob>>,
     downloads: RwLock<Vec<Download>>,
     cats: RwLock<Option<(std::time::Instant, Vec<String>)>>,
     agent: ureq::Agent,
@@ -1860,6 +1864,172 @@ fn map_route(state: &AppState, rest: &str, url: &str) -> Response<Cursor<Vec<u8>
     html_response(map_viewer_page(item, z, lon, lat))
 }
 
+pub struct SyncJob {
+    source: String,
+    status: String,
+    chunks_done: usize,
+    chunks_total: usize,
+    finished: bool,
+    failed: bool,
+}
+
+fn trusted_keys(dir: &PathBuf) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("trusted-keys.txt")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+fn fetch_source_bytes(state: &AppState, source: &str, tail: &str) -> Result<Vec<u8>, String> {
+    if let Some(dir) = source.strip_prefix("file://") {
+        return std::fs::read(format!("{dir}/{tail}"))
+            .map_err(|e| format!("cannot read {dir}/{tail}: {e}"));
+    }
+    if source.starts_with('/') {
+        return std::fs::read(format!("{source}/{tail}"))
+            .map_err(|e| format!("cannot read {source}/{tail}: {e}"));
+    }
+    let url = format!("{}/{tail}", source.trim_end_matches('/'));
+    let agent = agent_for(state, &url);
+    let resp = agent
+        .get(&url)
+        .call()
+        .map_err(|e| format!("fetch {url} failed: {e}"))?;
+    let mut buf = Vec::new();
+    resp.into_reader()
+        .take((sync::CHUNK_MAX + 1024 * 1024) as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("read {url} failed: {e}"))?;
+    Ok(buf)
+}
+
+fn set_job(state: &AppState, update: impl FnOnce(&mut SyncJob)) {
+    if let Some(job) = state.sync_job.write().unwrap().as_mut() {
+        update(job);
+    }
+}
+
+fn sync_run(state: Arc<AppState>, source: String, allow_unsigned: bool) {
+    fn fail_job(state: &AppState, why: String) {
+        set_job(state, |j| {
+            j.status = why;
+            j.finished = true;
+            j.failed = true;
+        });
+    }
+    let manifest_raw = match fetch_source_bytes(&state, &source, "edition.json") {
+        Ok(b) => b,
+        Err(e) => return fail_job(&state, e),
+    };
+    let edition: sync::Edition = match serde_json::from_slice(&manifest_raw) {
+        Ok(e) => e,
+        Err(e) => return fail_job(&state, format!("edition manifest is unreadable: {e}")),
+    };
+    if edition.format != "umiak-edition/0" {
+        return fail_job(&state, format!("unknown edition format {}", edition.format));
+    }
+    match (&edition.signer, &edition.signature) {
+        (Some(_), Some(_)) => {
+            let keys = trusted_keys(&state.dir);
+            if let Err(e) = sync::verify_edition(&edition, &keys) {
+                return fail_job(&state, e);
+            }
+            set_job(&state, |j| j.status = "signature verified".to_string());
+        }
+        _ => {
+            if !allow_unsigned {
+                return fail_job(
+                    &state,
+                    "edition is unsigned - refusing without the owner's say-so".to_string(),
+                );
+            }
+            set_job(&state, |j| {
+                j.status = "warning: unsigned edition, accepted on the owner's word".to_string()
+            });
+        }
+    }
+    let total: usize = edition.files.iter().map(|f| f.chunks.len()).sum();
+    set_job(&state, |j| {
+        j.chunks_total = total;
+        j.status = format!("fetching chunks for {}", edition.name);
+    });
+    let pool = sync::pool_dir(&state.dir);
+    if let Err(e) = std::fs::create_dir_all(&pool) {
+        return fail_job(&state, format!("cannot open the chunk pool: {e}"));
+    }
+    for file in &edition.files {
+        let target = state.dir.join(&file.name);
+        if target.exists() {
+            if let Ok(existing) = sync::read_file(&target) {
+                if sync::sha256_hex(&existing) == file.sha256 {
+                    set_job(&state, |j| j.chunks_done += file.chunks.len());
+                    continue;
+                }
+            }
+        }
+        for chunk in &file.chunks {
+            if !sync::pool_has(&pool, chunk) {
+                let bytes = match fetch_source_bytes(&state, &source, &format!("chunks/{chunk}")) {
+                    Ok(b) => b,
+                    Err(e) => return fail_job(&state, e),
+                };
+                if let Err(e) = sync::pool_put(&pool, chunk, &bytes) {
+                    return fail_job(&state, e);
+                }
+            }
+            set_job(&state, |j| j.chunks_done += 1);
+        }
+        match sync::assemble(&pool, file) {
+            Ok(bytes) => {
+                let part = state.dir.join(format!("{}.part", file.name));
+                if let Err(e) = std::fs::write(&part, &bytes)
+                    .and_then(|()| std::fs::rename(&part, &target))
+                {
+                    return fail_job(&state, format!("cannot shelve {}: {e}", file.name));
+                }
+            }
+            Err(e) => return fail_job(&state, e),
+        }
+    }
+    state.reload();
+    set_job(&state, |j| {
+        j.status = format!("edition {} shelved", edition.name);
+        j.finished = true;
+    });
+}
+
+fn sync_page(state: &AppState) -> String {
+    let keys = trusted_keys(&state.dir);
+    let job = state.sync_job.read().unwrap();
+    let mut body = String::from(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Sync</title>",
+    );
+    if let Some(j) = job.as_ref() {
+        if !j.finished {
+            body.push_str("<meta http-equiv=\"refresh\" content=\"3\">");
+        }
+    }
+    body.push_str("</head>\n<body><h1>Sync an edition</h1>\n");
+    body.push_str("<p>An edition is a signed manifest plus content-defined chunks, held by a mirror - an http address, or a directory on a disk that arrived by hand. Sync fetches only the chunks this shelf does not already have, verifies every chunk and every assembled file by hash, and shelves what passes.</p>\n");
+    if keys.is_empty() {
+        body.push_str("<p>No trusted keys yet: signed editions will be refused until a public key (one hex key per line) is placed in trusted-keys.txt in the shelf directory. Unsigned editions need the box below, ticked on purpose.</p>\n");
+    } else {
+        body.push_str(&format!("<p>{} trusted key(s) named in trusted-keys.txt.</p>\n", keys.len()));
+    }
+    body.push_str("<form action=\"/api/sync-start\" method=\"get\"><input name=\"source\" size=\"60\" placeholder=\"Mirror address or directory\"> <label><input type=\"checkbox\" name=\"allow_unsigned\" value=\"1\"> allow unsigned</label> <input type=\"submit\" value=\"Sync\"></form>\n");
+    if let Some(j) = job.as_ref() {
+        body.push_str(&format!(
+            "<p>- {} - {} of {} chunks - from {}</p>\n",
+            esc(&j.status), j.chunks_done, j.chunks_total, esc(&j.source)
+        ));
+    }
+    body.push_str("<p><a href=\"/shelf\">Shelf</a></p></body></html>");
+    body
+}
+
 fn epub_route(state: &AppState, rest: &str) -> Response<Cursor<Vec<u8>>> {
     let (file_part, inner) = match rest.split_once('/') {
         Some((a, b)) => (a, b.to_string()),
@@ -1909,6 +2079,43 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
         html_response(CHROME.to_string())
     } else if path == "/shelf" {
         html_response(shelf_page(&shelf, &state.epubs()))
+    } else if path == "/sync" {
+        html_response(sync_page(&state))
+    } else if path == "/api/sync-start" {
+        let source = query_param(&url, "source").unwrap_or_default();
+        let allow_unsigned = query_param(&url, "allow_unsigned").is_some();
+        if source.is_empty() {
+            Response::from_string("a sync needs a source\n").with_status_code(400)
+        } else if state.sync_job.read().unwrap().as_ref().map(|j| !j.finished).unwrap_or(false) {
+            Response::from_string("a sync is already running\n").with_status_code(409)
+        } else {
+            *state.sync_job.write().unwrap() = Some(SyncJob {
+                source: source.clone(),
+                status: "starting".to_string(),
+                chunks_done: 0,
+                chunks_total: 0,
+                finished: false,
+                failed: false,
+            });
+            let st = state.clone();
+            std::thread::spawn(move || sync_run(st, source, allow_unsigned));
+            let header = tiny_http::Header::from_bytes(&b"Location"[..], &b"/sync"[..]).unwrap();
+            Response::from_string("").with_status_code(302).with_header(header)
+        }
+    } else if path == "/api/sync-status" {
+        let job = state.sync_job.read().unwrap();
+        let text = match job.as_ref() {
+            Some(j) => serde_json::json!({
+                "status": j.status,
+                "done": j.chunks_done,
+                "total": j.chunks_total,
+                "finished": j.finished,
+                "failed": j.failed
+            }).to_string() + "\n",
+            None => "{\"status\": \"no sync has run\", \"done\": 0, \"total\": 0, \"finished\": true, \"failed\": false}\n".to_string(),
+        };
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+        Response::from_string(text).with_header(header)
     } else if path == "/maps" {
         html_response(maps_page(&state.maps()))
     } else if let Some(rest) = path.strip_prefix("/map/") {
@@ -2012,8 +2219,134 @@ fn handle(request: tiny_http::Request, state: Arc<AppState>) {
     let _ = request.respond(response);
 }
 
+
+fn load_edition_key(path: &str) -> Result<ed25519_dalek::SigningKey, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read key file: {e}"))?;
+    for line in text.lines() {
+        if let Some(hex) = line.strip_prefix("idem-ed25519-secret ") {
+            let bytes = sync::hex_decode(hex.trim())
+                .filter(|b| b.len() == 32)
+                .ok_or("key file secret is not 32 bytes of hex")?;
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&bytes);
+            return Ok(ed25519_dalek::SigningKey::from_bytes(&seed));
+        }
+    }
+    Err("key file carries no idem-ed25519-secret line".to_string())
+}
+
+/// Publisher side of an edition, run as a subcommand so any machine
+/// with the server binary can seal a mirror:
+///   umiak-server edition pack <shelf-dir> <mirror-dir> <name> [--key <key-file>]
+fn edition_cli(args: &[String]) {
+    if args.first().map(|a| a.as_str()) != Some("pack") || args.len() < 4 {
+        eprintln!("usage: umiak-server edition pack <shelf-dir> <mirror-dir> <name> [--key <key-file>]");
+        std::process::exit(2);
+    }
+    let shelf = PathBuf::from(&args[1]);
+    let mirror = PathBuf::from(&args[2]);
+    let name = args[3].clone();
+    let key_path = args
+        .windows(2)
+        .find(|w| w[0] == "--key")
+        .map(|w| w[1].clone());
+    let chunks_dir = mirror.join("chunks");
+    if let Err(e) = std::fs::create_dir_all(&chunks_dir) {
+        eprintln!("umiak-server: cannot create mirror: {e}");
+        std::process::exit(1);
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&shelf)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
+                        .map(|x| {
+                            x.eq_ignore_ascii_case("zim")
+                                || x.eq_ignore_ascii_case("epub")
+                                || x.eq_ignore_ascii_case("pmtiles")
+                        })
+                        .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    paths.sort();
+    let mut files = Vec::new();
+    let mut chunk_count = 0usize;
+    for path in &paths {
+        let data = match sync::read_file(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("umiak-server: {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        };
+        let chunked = sync::chunk_bytes(
+            &path.file_name().unwrap_or_default().to_string_lossy(),
+            &data,
+        );
+        for (hash, bytes) in &chunked.chunks {
+            let target = chunks_dir.join(hash);
+            if !target.exists() {
+                if let Err(e) = std::fs::write(&target, bytes) {
+                    eprintln!("umiak-server: cannot write chunk: {e}");
+                    std::process::exit(1);
+                }
+            }
+            chunk_count += 1;
+        }
+        println!("- {} - {} chunks", chunked.file.name, chunked.chunks.len());
+        files.push(chunked.file);
+    }
+    let mut edition = sync::Edition {
+        format: "umiak-edition/0".to_string(),
+        name: name.clone(),
+        files,
+        signer: None,
+        signature: None,
+    };
+    if let Some(kp) = &key_path {
+        match load_edition_key(kp) {
+            Ok(key) => {
+                use ed25519_dalek::Signer;
+                let sig = key.sign(&sync::edition_body(&edition));
+                edition.signer = Some(
+                    key.verifying_key()
+                        .as_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect(),
+                );
+                edition.signature = Some(
+                    sig.to_bytes().iter().map(|b| format!("{b:02x}")).collect(),
+                );
+            }
+            Err(e) => {
+                eprintln!("umiak-server: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let text = serde_json::to_string_pretty(&edition).unwrap();
+    if let Err(e) = std::fs::write(mirror.join("edition.json"), text + "\n") {
+        eprintln!("umiak-server: cannot write manifest: {e}");
+        std::process::exit(1);
+    }
+    println!(
+        "edition {name} packed: {} file(s), {} chunk references, {}",
+        edition.files.len(),
+        chunk_count,
+        if edition.signer.is_some() { "signed" } else { "unsigned" }
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|a| a.as_str()) == Some("edition") {
+        edition_cli(&args[2..]);
+        return;
+    }
     let mut shelf_dir = std::env::var("UMIAK_SHELF").unwrap_or_else(|_| "shelf".to_string());
     let mut port: u16 = 27331;
     let mut i = 1;
@@ -2068,6 +2401,7 @@ fn main() {
         data: RwLock::new(load_data(&dir)),
         epubs: RwLock::new(Arc::new(epub::scan_epubs(&dir))),
         maps: RwLock::new(Arc::new(scan_maps(&dir))),
+        sync_job: RwLock::new(None),
         shelf: RwLock::new(Arc::new(Shelf::open_dir(&dir))),
         downloads: RwLock::new(Vec::new()),
         cats: RwLock::new(None),
