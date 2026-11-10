@@ -1,8 +1,8 @@
-# Umiak
+# Coffer
 
 by Free Computation. AGPL-3.0.
 
-A browser for people with unstable or no internet. Umiak is fully
+A browser for people with unstable or no internet. Coffer is fully
 functional with no connection at all: its internet is the Shelf, a
 library aboard the machine - Wikipedia and thousands of other open
 corpora in ZIM form, maps, books, documentation. When a connection
@@ -10,23 +10,23 @@ appears it drinks: verified content arrives in chunks, from the network
 or from a stick passed hand to hand, and is checked before it is
 shelved.
 
-Umiak is the first form of idem, the system that grows underneath it.
+The name is the household word: a coffer is the strong chest a
+family kept its valuables in - books, documents, letters - at
+home, under the owner's own hand. Coffer keeps the library the
+same way: aboard, verified, and openable with no one's permission.
 
-In the system prose of Optic, Umiak is keep-files. The explicit
-name says what it does: it keeps files aboard - books, maps, and
-pages - and keeps them usable with no connection. The codename
-Umiak remains the repo handle, at freecomputation/umiak, because
-a repo slug is an address.
+Coffer is the first form of Fixity, the system that grows
+underneath it.
 
 ## Layout
 
 `crates/zim-ffi` - the only C++ in the project: a thin C shim over
 libzim with a safe Rust wrapper.
 
-`crates/umiak-core` - the Shelf: discovery and reading of the books
+`crates/coffer-core` - the Shelf: discovery and reading of the books
 aboard.
 
-`crates/umiak-server` - the loopback HTTP server every surface talks
+`crates/coffer-server` - the loopback HTTP server every surface talks
 to. The chrome, the Shelf home, book content, one federated search
 across everything aboard, and the catalog.
 
@@ -45,15 +45,15 @@ libzim (runtime plus headers). On a Debian-family system:
 
 Then:
 
-    UMIAK_LIBZIM_LIB=$(ldconfig -p | grep -m1 'libzim.so' | awk '{print $NF}') \
-      cargo run -p umiak-server -- --shelf /path/to/zims
+    COFFER_LIBZIM_LIB=$(ldconfig -p | grep -m1 'libzim.so' | awk '{print $NF}') \
+      cargo run -p coffer-server -- --shelf /path/to/zims
 
 (If `cargo` is not on your path, it lives in `~/.cargo/bin`.)
 
 Where only the runtime is installed, extract the headers from the
 libzim-dev package into `third-party/libzim-dev/` (the build finds
 them there; the directory is git-ignored) and point
-`UMIAK_LIBZIM_LIB` at the runtime library, for example
+`COFFER_LIBZIM_LIB` at the runtime library, for example
 `/lib/x86_64-linux-gnu/libzim.so.8`:
 
     apt-get download libzim-dev
@@ -74,7 +74,7 @@ The Tauri shell needs the system webview development libraries:
     cd app/src-tauri && cargo build
 
 The icons are generated (the Open Loop, drawn by the script), never
-committed. At run time the shell starts `umiak-server` when it finds
+committed. At run time the shell starts `coffer-server` when it finds
 it beside the executable, so put the built server next to the built
 app, and run the app from a directory holding your shelf folder.
 
@@ -132,7 +132,7 @@ named in trusted-keys.txt in the shelf directory, and an unsigned
 edition is refused unless the owner ticks the box on purpose - the
 same discipline as the downloads, one level up. The publisher side
 is a subcommand of the server itself:
-"umiak-server edition pack <shelf-dir> <mirror-dir> <name>" with
+"coffer-server edition pack <shelf-dir> <mirror-dir> <name>" with
 "--key <key-file>" to sign.
 
 ## Design

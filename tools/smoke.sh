@@ -1,5 +1,5 @@
 #!/bin/sh
-# Umiak smoke test: builds everything, makes fixture books, boots the
+# Coffer smoke test: builds everything, makes fixture books, boots the
 # server on a scratch shelf, and checks the routes that matter.
 #
 #   sh tools/smoke.sh
@@ -10,7 +10,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-PORT="${UMIAK_SMOKE_PORT:-27531}"
+PORT="${COFFER_SMOKE_PORT:-27531}"
 BASE="http://127.0.0.1:$PORT"
 SCRATCH="$(mktemp -d)"
 SRV_PID=""
@@ -28,11 +28,11 @@ command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
 export PATH
 
 # The library path incantation works on a stock install too.
-if [ -z "$UMIAK_LIBZIM_LIB" ]; then
-    UMIAK_LIBZIM_LIB="$(ldconfig -p | grep -m1 'libzim\.so' | awk '{print $NF}')"
-    export UMIAK_LIBZIM_LIB
+if [ -z "$COFFER_LIBZIM_LIB" ]; then
+    COFFER_LIBZIM_LIB="$(ldconfig -p | grep -m1 'libzim\.so' | awk '{print $NF}')"
+    export COFFER_LIBZIM_LIB
 fi
-[ -n "$UMIAK_LIBZIM_LIB" ] || fail "libzim runtime not found"
+[ -n "$COFFER_LIBZIM_LIB" ] || fail "libzim runtime not found"
 
 # Fixture tool: headers may live in the vendored extraction (this repo's
 # own layout) or the system include path.
@@ -55,7 +55,7 @@ fi
 cargo build 2>/dev/null || fail "cargo build"
 note "workspace builds"
 
-./target/debug/umiak-server --shelf "$SCRATCH/shelf" --port "$PORT" >"$SCRATCH/server.log" 2>&1 &
+./target/debug/coffer-server --shelf "$SCRATCH/shelf" --port "$PORT" >"$SCRATCH/server.log" 2>&1 &
 SRV_PID=$!
 i=0
 until curl -s -o /dev/null "$BASE/api/books" 2>/dev/null; do
@@ -77,8 +77,8 @@ count="$(curl -s "$BASE/api/books" | grep -o '"id"' | wc -l)"
 note "ok - two fixture books aboard"
 
 check "chrome served at /" 'id="addr"' "/"
-check "shelf lists the fixture" 'Umiak Test Shelf' "/shelf"
-check "article bytes served" 'whole household' "/book/1/umiak"
+check "shelf lists the fixture" 'Coffer Test Shelf' "/shelf"
+check "article bytes served" 'whole household' "/book/1/coffer"
 check "federated search finds indexed hit" 'Vesper, the Evening Star' "/api/search?q=star"
 check "suggestion fallback covers the no-index book" '"book":0' "/api/search?q=star"
 

@@ -1,9 +1,9 @@
 [package]
-name = "umiak-app"
+name = "coffer-app"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "Umiak shell: a system-webview window onto the loopback Shelf server."
+description = "Coffer shell: a system-webview window onto the loopback Shelf server."
 build = "build.rs"
 
 [build-dependencies]

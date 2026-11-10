@@ -152,6 +152,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "coffer-core"
+version = "0.1.0"
+dependencies = [
+ "zim-ffi",
+]
+
+[[package]]
+name = "coffer-server"
+version = "0.1.0"
+dependencies = [
+ "coffer-core",
+ "ed25519-dalek",
+ "flate2",
+ "native-tls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tiny_http",
+ "ureq",
+ "zip",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1148,29 +1171,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "umiak-core"
-version = "0.1.0"
-dependencies = [
- "zim-ffi",
-]
-
-[[package]]
-name = "umiak-server"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "flate2",
- "native-tls",
- "serde",
- "serde_json",
- "sha2",
- "tiny_http",
- "umiak-core",
- "ureq",
- "zip",
-]
 
 [[package]]
 name = "unicode-ident"

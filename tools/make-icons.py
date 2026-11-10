@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw the Umiak app icons: the Open Loop, Free Computation's mark.
+"""Draw the Coffer app icons: the Open Loop, Free Computation's mark.
 
 A thick ring, broken open at the top right, one square pixel outside
 the gap, one dot at the center. Pure standard library on purpose: the
