@@ -22,7 +22,7 @@ CONTAINER = """<?xml version="1.0" encoding="UTF-8"?>
 OPF = """<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="bookid">urn:umiak:test-epub</dc:identifier>
+    <dc:identifier id="bookid">urn:coffer:test-epub</dc:identifier>
     <dc:title>The Test Voyage</dc:title>
     <dc:language>en</dc:language>
   </metadata>

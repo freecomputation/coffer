@@ -1,5 +1,5 @@
 [package]
-name = "umiak-core"
+name = "coffer-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

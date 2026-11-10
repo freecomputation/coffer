@@ -1,4 +1,4 @@
-// make-test-zim: builds a tiny, fully indexed ZIM used as Umiak's test
+// make-test-zim: builds a tiny, fully indexed ZIM used as Coffer's test
 // fixture, so the reading path and full-text search can be exercised with
 // no downloads. Real shelves carry real corpora; this is three pages.
 //
@@ -38,21 +38,22 @@ int main(int argc, char** argv) {
     if (indexing) creator.configIndexing(true, "eng");
     creator.startZimCreation(argv[1]);
 
-    creator.addMetadata("Title", "Umiak Test Shelf");
-    creator.addMetadata("Name", "umiak-test-shelf");
+    creator.addMetadata("Title", "Coffer Test Shelf");
+    creator.addMetadata("Name", "coffer-test-shelf");
     creator.addMetadata("Language", "eng");
     creator.addMetadata("Creator", "Free Computation");
     creator.addMetadata("Publisher", "Free Computation");
-    creator.addMetadata("Description", "Three page fixture for the Umiak reading path.");
+    creator.addMetadata("Description", "Three page fixture for the Coffer reading path.");
     creator.addMetadata("Date", "2026-11-09");
 
-    creator.addItem(page("umiak", "The Umiak",
-        "The umiak is an open boat of the Arctic, wide and un decked, "
-        "built to carry a whole household at once: people, tools, food, "
-        "everything a family owns moves in a single hull. It is the "
-        "opposite of the kayak, which carries one hunter. This browser "
-        "takes the boat's name because it carries the household too, "
-        "a whole library in one hull, and asks for no harbour."));
+    creator.addItem(page("coffer", "The Coffer",
+        "A coffer is the household's strong chest, the box a family "
+        "kept its valuables in: books, documents, letters, the deeds "
+        "to the land. What mattered was kept at home, under the "
+        "owner's own hand, and it travelled when the household "
+        "travelled. This browser takes the chest's name because it "
+        "keeps the library the same way, aboard and at home, and "
+        "asks for no one's permission to open it."));
     creator.addItem(page("vesper", "Vesper, the Evening Star",
         "Vesper is the evening star, the planet Venus seen at dusk, "
         "the first light in the sky and the one sailors steered by "
@@ -66,7 +67,7 @@ int main(int argc, char** argv) {
         "network, when it comes, is a supply line and never a leash. "
         "Pull the cable. If it stops working, it was never yours."));
 
-    creator.setMainPath("umiak");
+    creator.setMainPath("coffer");
     creator.finishZimCreation();
     std::cout << "wrote " << argv[1] << "\n";
     return 0;

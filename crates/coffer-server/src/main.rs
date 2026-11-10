@@ -1,4 +1,4 @@
-//! umiak-server: serves the Shelf over loopback HTTP.
+//! coffer-server: serves the Shelf over loopback HTTP.
 //!
 //! Routes:
 //!   GET /                    the chrome: nav bar, address field, tabs
@@ -14,7 +14,7 @@
 //!   GET /api/books           the shelf as JSON
 //!   GET /api/search?q=       search results as JSON
 //!
-//! The webview window loads this server; nothing in Umiak renders around
+//! The webview window loads this server; nothing in Coffer renders around
 //! it. That keeps the engine borrowed and swappable (determination 1).
 //! Requests are handled on threads: a long download never blocks reading.
 
@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use tiny_http::{Header, Response, Server};
-use umiak_core::Shelf;
+use coffer_core::Shelf;
 
 mod epub;
 mod pmtiles;
@@ -127,7 +127,7 @@ fn json_response(body: String) -> Response<Cursor<Vec<u8>>> {
 /// Plain script, no build step, nothing fetched. Tabs are saved states:
 /// one live view, and switching a tab swaps the address it shows.
 const CHROME: &str = r##"<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Umiak</title>
+<html><head><meta charset="utf-8"><title>Coffer</title>
 <style>
 html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#fff;color:#111}
 #bar{display:flex;gap:6px;align-items:center;padding:6px 8px;background:#eee;border-bottom:1px solid #ccc}
@@ -1440,7 +1440,11 @@ struct BrowserData {
 
 fn load_data(dir: &std::path::Path) -> BrowserData {
     let mut data = BrowserData::default();
-    if let Ok(text) = std::fs::read_to_string(dir.join("umiak-data.json")) {
+    // Shelves kept under the previous name carry umiak-data.json;
+    // read it until the first save writes coffer-data.json.
+    let text = std::fs::read_to_string(dir.join("coffer-data.json"))
+        .or_else(|_| std::fs::read_to_string(dir.join("umiak-data.json")));
+    if let Ok(text) = text {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
             for key in ["bookmarks", "history"] {
                 if let Some(arr) = v.get(key).and_then(|a| a.as_array()) {
@@ -1643,7 +1647,7 @@ impl AppState {
             marks_json(&data.bookmarks),
             marks_json(&data.history)
         );
-        let _ = std::fs::write(self.dir.join("umiak-data.json"), text);
+        let _ = std::fs::write(self.dir.join("coffer-data.json"), text);
     }
 
     fn maps(&self) -> Arc<Vec<MapItem>> {
@@ -1691,7 +1695,7 @@ pub fn scan_maps(dir: &PathBuf) -> Vec<MapItem> {
                     .to_string(),
                 archive,
             }),
-            Err(e) => eprintln!("umiak-server: skipping {}: {e}", path.display()),
+            Err(e) => eprintln!("coffer-server: skipping {}: {e}", path.display()),
         }
     }
     out
@@ -1928,7 +1932,7 @@ fn sync_run(state: Arc<AppState>, source: String, allow_unsigned: bool) {
         Ok(e) => e,
         Err(e) => return fail_job(&state, format!("edition manifest is unreadable: {e}")),
     };
-    if edition.format != "umiak-edition/0" {
+    if edition.format != "coffer-edition/0" && edition.format != "umiak-edition/0" {
         return fail_job(&state, format!("unknown edition format {}", edition.format));
     }
     match (&edition.signer, &edition.signature) {
@@ -2237,10 +2241,10 @@ fn load_edition_key(path: &str) -> Result<ed25519_dalek::SigningKey, String> {
 
 /// Publisher side of an edition, run as a subcommand so any machine
 /// with the server binary can seal a mirror:
-///   umiak-server edition pack <shelf-dir> <mirror-dir> <name> [--key <key-file>]
+///   coffer-server edition pack <shelf-dir> <mirror-dir> <name> [--key <key-file>]
 fn edition_cli(args: &[String]) {
     if args.first().map(|a| a.as_str()) != Some("pack") || args.len() < 4 {
-        eprintln!("usage: umiak-server edition pack <shelf-dir> <mirror-dir> <name> [--key <key-file>]");
+        eprintln!("usage: coffer-server edition pack <shelf-dir> <mirror-dir> <name> [--key <key-file>]");
         std::process::exit(2);
     }
     let shelf = PathBuf::from(&args[1]);
@@ -2252,7 +2256,7 @@ fn edition_cli(args: &[String]) {
         .map(|w| w[1].clone());
     let chunks_dir = mirror.join("chunks");
     if let Err(e) = std::fs::create_dir_all(&chunks_dir) {
-        eprintln!("umiak-server: cannot create mirror: {e}");
+        eprintln!("coffer-server: cannot create mirror: {e}");
         std::process::exit(1);
     }
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&shelf)
@@ -2278,7 +2282,7 @@ fn edition_cli(args: &[String]) {
         let data = match sync::read_file(path) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("umiak-server: {}: {e}", path.display());
+                eprintln!("coffer-server: {}: {e}", path.display());
                 std::process::exit(1);
             }
         };
@@ -2290,7 +2294,7 @@ fn edition_cli(args: &[String]) {
             let target = chunks_dir.join(hash);
             if !target.exists() {
                 if let Err(e) = std::fs::write(&target, bytes) {
-                    eprintln!("umiak-server: cannot write chunk: {e}");
+                    eprintln!("coffer-server: cannot write chunk: {e}");
                     std::process::exit(1);
                 }
             }
@@ -2300,7 +2304,7 @@ fn edition_cli(args: &[String]) {
         files.push(chunked.file);
     }
     let mut edition = sync::Edition {
-        format: "umiak-edition/0".to_string(),
+        format: "coffer-edition/0".to_string(),
         name: name.clone(),
         files,
         signer: None,
@@ -2323,14 +2327,14 @@ fn edition_cli(args: &[String]) {
                 );
             }
             Err(e) => {
-                eprintln!("umiak-server: {e}");
+                eprintln!("coffer-server: {e}");
                 std::process::exit(1);
             }
         }
     }
     let text = serde_json::to_string_pretty(&edition).unwrap();
     if let Err(e) = std::fs::write(mirror.join("edition.json"), text + "\n") {
-        eprintln!("umiak-server: cannot write manifest: {e}");
+        eprintln!("coffer-server: cannot write manifest: {e}");
         std::process::exit(1);
     }
     println!(
@@ -2347,7 +2351,9 @@ fn main() {
         edition_cli(&args[2..]);
         return;
     }
-    let mut shelf_dir = std::env::var("UMIAK_SHELF").unwrap_or_else(|_| "shelf".to_string());
+    let mut shelf_dir = std::env::var("COFFER_SHELF")
+        .or_else(|_| std::env::var("UMIAK_SHELF"))
+        .unwrap_or_else(|_| "shelf".to_string());
     let mut port: u16 = 27331;
     let mut i = 1;
     while i < args.len() {
@@ -2367,7 +2373,7 @@ fn main() {
     // The catalog fetch honors a proxy when the environment names one;
     // on a plain network there is none and the connection is direct.
     let mut agent_builder = ureq::AgentBuilder::new()
-        .user_agent("Umiak/0.1 (+https://freecomputation.org)")
+        .user_agent("Coffer/0.1 (+https://freecomputation.org)")
         .timeout_connect(std::time::Duration::from_secs(15))
         .timeout_read(std::time::Duration::from_secs(120));
     if let Ok(connector) = native_tls::TlsConnector::new() {
@@ -2389,7 +2395,7 @@ fn main() {
     }
 
     let mut direct_builder = ureq::AgentBuilder::new()
-        .user_agent("Umiak/0.1 (+https://freecomputation.org)")
+        .user_agent("Coffer/0.1 (+https://freecomputation.org)")
         .timeout_connect(std::time::Duration::from_secs(15))
         .timeout_read(std::time::Duration::from_secs(120));
     if let Ok(connector) = native_tls::TlsConnector::new() {
@@ -2409,14 +2415,14 @@ fn main() {
         agent: agent_builder.build(),
     });
     println!(
-        "umiak-server: {} zim and {} epub book(s) aboard from {}",
+        "coffer-server: {} zim and {} epub book(s) aboard from {}",
         state.shelf().books.len(),
         state.epubs().len(),
         shelf_dir
     );
 
     let server = Server::http(("127.0.0.1", port)).expect("bind loopback");
-    println!("umiak-server: listening on http://127.0.0.1:{}/", port);
+    println!("coffer-server: listening on http://127.0.0.1:{}/", port);
 
     for request in server.incoming_requests() {
         let state = state.clone();

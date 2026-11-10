@@ -4,7 +4,7 @@ Where the cargo comes from. Researched 2026-11-09 against the
 publishers' own pages. Sizes move at every rebuild: read the live
 catalog entry before committing disk to anything large.
 
-Umiak drinks from feeds and files. This document sorts every real
+Coffer drinks from feeds and files. This document sorts every real
 source by how it reaches the Shelf: feeds the catalog reads directly,
 books and packs that drop in as files, bulk dumps that become
 editions, and the vault tier of very large files that are not books

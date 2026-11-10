@@ -1,12 +1,12 @@
 [package]
-name = "umiak-server"
+name = "coffer-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Loopback HTTP server for the Shelf. Every Umiak surface talks to this."
+description = "Loopback HTTP server for the Shelf. Every Coffer surface talks to this."
 
 [dependencies]
-umiak-core = { path = "../umiak-core" }
+coffer-core = { path = "../coffer-core" }
 tiny_http = "0.12"
 ureq = { version = "2", default-features = false, features = ["native-tls", "charset", "gzip", "brotli"] }
 zip = "2"

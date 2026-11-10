@@ -28,7 +28,7 @@ static char* dup_str(const std::string& s) {
     return p;
 }
 
-zim_handle* umiak_zim_open(const char* path, char** err_out) {
+zim_handle* coffer_zim_open(const char* path, char** err_out) {
     try {
         return new zim_handle{zim::Archive(std::string(path))};
     } catch (const std::exception& e) {
@@ -37,17 +37,17 @@ zim_handle* umiak_zim_open(const char* path, char** err_out) {
     }
 }
 
-void umiak_zim_close(zim_handle* h) { delete h; }
+void coffer_zim_close(zim_handle* h) { delete h; }
 
-uint32_t umiak_zim_entry_count(zim_handle* h) {
+uint32_t coffer_zim_entry_count(zim_handle* h) {
     return (uint32_t)h->archive.getEntryCount();
 }
 
-uint32_t umiak_zim_article_count(zim_handle* h) {
+uint32_t coffer_zim_article_count(zim_handle* h) {
     return (uint32_t)h->archive.getArticleCount();
 }
 
-char* umiak_zim_main_path(zim_handle* h, char** err_out) {
+char* coffer_zim_main_path(zim_handle* h, char** err_out) {
     try {
         auto item = h->archive.getMainEntry().getItem(true);
         return dup_str(item.getPath());
@@ -57,7 +57,7 @@ char* umiak_zim_main_path(zim_handle* h, char** err_out) {
     }
 }
 
-char* umiak_zim_metadata(zim_handle* h, const char* key) {
+char* coffer_zim_metadata(zim_handle* h, const char* key) {
     try {
         return dup_str(h->archive.getMetadata(key));
     } catch (...) {
@@ -65,7 +65,7 @@ char* umiak_zim_metadata(zim_handle* h, const char* key) {
     }
 }
 
-int umiak_zim_get(zim_handle* h, const char* path,
+int coffer_zim_get(zim_handle* h, const char* path,
                   uint8_t** out, size_t* out_len,
                   char* mime_buf, size_t mime_cap,
                   char** err_out) {
@@ -90,7 +90,7 @@ int umiak_zim_get(zim_handle* h, const char* path,
     }
 }
 
-char* umiak_zim_search(zim_handle* h, const char* query, uint32_t limit,
+char* coffer_zim_search(zim_handle* h, const char* query, uint32_t limit,
                        char** err_out) {
     try {
         zim::Searcher searcher(h->archive);
@@ -110,7 +110,7 @@ char* umiak_zim_search(zim_handle* h, const char* query, uint32_t limit,
     }
 }
 
-char* umiak_zim_suggest(zim_handle* h, const char* query, uint32_t limit,
+char* coffer_zim_suggest(zim_handle* h, const char* query, uint32_t limit,
                         char** err_out) {
     try {
         zim::SuggestionSearcher searcher(h->archive);
@@ -130,5 +130,5 @@ char* umiak_zim_suggest(zim_handle* h, const char* query, uint32_t limit,
     }
 }
 
-void umiak_zim_free_buf(uint8_t* p) { std::free(p); }
-void umiak_zim_free_str(char* p) { std::free(p); }
+void coffer_zim_free_buf(uint8_t* p) { std::free(p); }
+void coffer_zim_free_str(char* p) { std::free(p); }

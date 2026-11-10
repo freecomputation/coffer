@@ -1,5 +1,5 @@
 //! Safe Rust wrapper over the libzim C shim. This crate is the only door
-//! between Rust and C++ in Umiak; everything above it speaks plain Rust.
+//! between Rust and C++ in Coffer; everything above it speaks plain Rust.
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
@@ -8,13 +8,13 @@ use std::ptr;
 type zim_handle = c_void;
 
 extern "C" {
-    fn umiak_zim_open(path: *const c_char, err_out: *mut *mut c_char) -> *mut zim_handle;
-    fn umiak_zim_close(h: *mut zim_handle);
-    fn umiak_zim_entry_count(h: *mut zim_handle) -> u32;
-    fn umiak_zim_article_count(h: *mut zim_handle) -> u32;
-    fn umiak_zim_main_path(h: *mut zim_handle, err_out: *mut *mut c_char) -> *mut c_char;
-    fn umiak_zim_metadata(h: *mut zim_handle, key: *const c_char) -> *mut c_char;
-    fn umiak_zim_get(
+    fn coffer_zim_open(path: *const c_char, err_out: *mut *mut c_char) -> *mut zim_handle;
+    fn coffer_zim_close(h: *mut zim_handle);
+    fn coffer_zim_entry_count(h: *mut zim_handle) -> u32;
+    fn coffer_zim_article_count(h: *mut zim_handle) -> u32;
+    fn coffer_zim_main_path(h: *mut zim_handle, err_out: *mut *mut c_char) -> *mut c_char;
+    fn coffer_zim_metadata(h: *mut zim_handle, key: *const c_char) -> *mut c_char;
+    fn coffer_zim_get(
         h: *mut zim_handle,
         path: *const c_char,
         out: *mut *mut u8,
@@ -23,20 +23,20 @@ extern "C" {
         mime_cap: usize,
         err_out: *mut *mut c_char,
     ) -> i32;
-    fn umiak_zim_search(
+    fn coffer_zim_search(
         h: *mut zim_handle,
         query: *const c_char,
         limit: u32,
         err_out: *mut *mut c_char,
     ) -> *mut c_char;
-    fn umiak_zim_suggest(
+    fn coffer_zim_suggest(
         h: *mut zim_handle,
         query: *const c_char,
         limit: u32,
         err_out: *mut *mut c_char,
     ) -> *mut c_char;
-    fn umiak_zim_free_buf(p: *mut u8);
-    fn umiak_zim_free_str(p: *mut c_char);
+    fn coffer_zim_free_buf(p: *mut u8);
+    fn coffer_zim_free_str(p: *mut c_char);
 }
 
 fn take_err(err: *mut c_char) -> String {
@@ -45,7 +45,7 @@ fn take_err(err: *mut c_char) -> String {
     }
     unsafe {
         let msg = CStr::from_ptr(err).to_string_lossy().into_owned();
-        umiak_zim_free_str(err);
+        coffer_zim_free_str(err);
         msg
     }
 }
@@ -56,7 +56,7 @@ fn take_string(p: *mut c_char) -> Option<String> {
     }
     unsafe {
         let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-        umiak_zim_free_str(p);
+        coffer_zim_free_str(p);
         Some(s)
     }
 }
@@ -82,7 +82,7 @@ impl Archive {
     pub fn open(path: &str) -> Result<Archive, String> {
         let cpath = CString::new(path).map_err(|_| "path contains NUL".to_string())?;
         let mut err: *mut c_char = ptr::null_mut();
-        let raw = unsafe { umiak_zim_open(cpath.as_ptr(), &mut err) };
+        let raw = unsafe { coffer_zim_open(cpath.as_ptr(), &mut err) };
         if raw.is_null() {
             return Err(take_err(err));
         }
@@ -90,16 +90,16 @@ impl Archive {
     }
 
     pub fn entry_count(&self) -> u32 {
-        unsafe { umiak_zim_entry_count(self.raw) }
+        unsafe { coffer_zim_entry_count(self.raw) }
     }
 
     pub fn article_count(&self) -> u32 {
-        unsafe { umiak_zim_article_count(self.raw) }
+        unsafe { coffer_zim_article_count(self.raw) }
     }
 
     pub fn main_path(&self) -> Result<String, String> {
         let mut err: *mut c_char = ptr::null_mut();
-        let p = unsafe { umiak_zim_main_path(self.raw, &mut err) };
+        let p = unsafe { coffer_zim_main_path(self.raw, &mut err) };
         if p.is_null() {
             return Err(take_err(err));
         }
@@ -108,7 +108,7 @@ impl Archive {
 
     pub fn metadata(&self, key: &str) -> Option<String> {
         let ckey = CString::new(key).ok()?;
-        let p = unsafe { umiak_zim_metadata(self.raw, ckey.as_ptr()) };
+        let p = unsafe { coffer_zim_metadata(self.raw, ckey.as_ptr()) };
         take_string(p)
     }
 
@@ -120,7 +120,7 @@ impl Archive {
         let mut mime = vec![0u8; 128];
         let mut err: *mut c_char = ptr::null_mut();
         let rc = unsafe {
-            umiak_zim_get(
+            coffer_zim_get(
                 self.raw,
                 cpath.as_ptr(),
                 &mut out,
@@ -134,7 +134,7 @@ impl Archive {
             1 => {
                 let bytes = unsafe {
                     let v = std::slice::from_raw_parts(out, out_len).to_vec();
-                    umiak_zim_free_buf(out);
+                    coffer_zim_free_buf(out);
                     v
                 };
                 let mime_str = CStr::from_bytes_until_nul(&mime)
@@ -152,7 +152,7 @@ impl Archive {
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<(String, String)>, String> {
         let cquery = CString::new(query).map_err(|_| "query contains NUL".to_string())?;
         let mut err: *mut c_char = ptr::null_mut();
-        let p = unsafe { umiak_zim_search(self.raw, cquery.as_ptr(), limit, &mut err) };
+        let p = unsafe { coffer_zim_search(self.raw, cquery.as_ptr(), limit, &mut err) };
         if p.is_null() {
             return Err(take_err(err));
         }
@@ -163,7 +163,7 @@ impl Archive {
     pub fn suggest(&self, query: &str, limit: u32) -> Result<Vec<(String, String)>, String> {
         let cquery = CString::new(query).map_err(|_| "query contains NUL".to_string())?;
         let mut err: *mut c_char = ptr::null_mut();
-        let p = unsafe { umiak_zim_suggest(self.raw, cquery.as_ptr(), limit, &mut err) };
+        let p = unsafe { coffer_zim_suggest(self.raw, cquery.as_ptr(), limit, &mut err) };
         if p.is_null() {
             return Err(take_err(err));
         }
@@ -173,6 +173,6 @@ impl Archive {
 
 impl Drop for Archive {
     fn drop(&mut self) {
-        unsafe { umiak_zim_close(self.raw) }
+        unsafe { coffer_zim_close(self.raw) }
     }
 }

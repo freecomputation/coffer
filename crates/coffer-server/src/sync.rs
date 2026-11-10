@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 // Content-defined chunking, gear-hash family: a rolling hash over
 // the bytes, a boundary where the masked hash is zero once the
 // minimum size has passed, a hard boundary at the maximum. The gear
-// table is generated from a fixed seed so every Umiak everywhere
+// table is generated from a fixed seed so every Coffer everywhere
 // cuts the same file into the same chunks.
 pub const CHUNK_MIN: usize = 64 * 1024;
 pub const CHUNK_MAX: usize = 1024 * 1024;
@@ -153,7 +153,16 @@ pub fn chunk_bytes(name: &str, data: &[u8]) -> Chunked {
 /// Where chunks live on this machine: a content-addressed pool in
 /// the shelf directory, so every edition and every book shares it.
 pub fn pool_dir(shelf_dir: &Path) -> PathBuf {
-    shelf_dir.join(".umiak-chunks")
+    let current = shelf_dir.join(".coffer-chunks");
+    if current.exists() {
+        return current;
+    }
+    // Shelves pooled under the previous name keep their pool.
+    let legacy = shelf_dir.join(".umiak-chunks");
+    if legacy.exists() {
+        return legacy;
+    }
+    current
 }
 
 pub fn pool_has(pool: &Path, chunk: &str) -> bool {

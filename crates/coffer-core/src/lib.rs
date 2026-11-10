@@ -75,7 +75,7 @@ impl Shelf {
                     };
                     books.push(book);
                 }
-                Err(e) => eprintln!("umiak: skipping {}: {}", path.display(), e),
+                Err(e) => eprintln!("coffer: skipping {}: {}", path.display(), e),
             }
         }
         Shelf { books }

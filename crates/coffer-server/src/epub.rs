@@ -1,4 +1,4 @@
-//! EPUB books aboard the Shelf. An EPUB is a zip of XHTML; Umiak opens
+//! EPUB books aboard the Shelf. An EPUB is a zip of XHTML; Coffer opens
 //! it directly: the spine becomes a contents page, and every file in
 //! the zip is served at a path that mirrors its place inside the book,
 //! so the book's own chapter links, images, and styles resolve as the
@@ -255,7 +255,7 @@ pub fn scan_epubs(dir: &Path) -> Vec<EpubBook> {
     for path in paths {
         match EpubBook::open(&path) {
             Some(b) => books.push(b),
-            None => eprintln!("umiak: skipping {}: not a readable EPUB", path.display()),
+            None => eprintln!("coffer: skipping {}: not a readable EPUB", path.display()),
         }
     }
     books
